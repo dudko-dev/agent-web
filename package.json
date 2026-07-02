@@ -1,6 +1,6 @@
 {
   "name": "@dudko.dev/agent-web",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Headless, configurable in-browser LLM agent on the Vercel AI SDK: multi-provider bring-your-own-key (OpenAI, Anthropic, Google, xAI, DeepSeek, gateway, openai-compatible) AND local WebGPU/WebLLM, native + prompted tool-calling, structured output, an encrypted IndexedDB token vault, and a plan → execute → replan → synthesize loop. UI-agnostic.",
   "type": "module",
   "sideEffects": false,
@@ -11,14 +11,29 @@
   "jsdelivr": "./dist/agent-web.js",
   "exports": {
     ".": {
-      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./mcp": {
-      "import": { "types": "./dist/mcp.d.ts", "default": "./dist/mcp.js" },
-      "require": { "types": "./dist/mcp.d.cts", "default": "./dist/mcp.cjs" }
+      "import": {
+        "types": "./dist/mcp.d.ts",
+        "default": "./dist/mcp.js"
+      },
+      "require": {
+        "types": "./dist/mcp.d.cts",
+        "default": "./dist/mcp.cjs"
+      }
     },
-    "./bundle": { "types": "./dist/index.d.ts", "import": "./dist/agent-web.js" },
+    "./bundle": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/agent-web.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -127,16 +142,36 @@
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "peerDependenciesMeta": {
-    "@ai-sdk/openai": { "optional": true },
-    "@ai-sdk/anthropic": { "optional": true },
-    "@ai-sdk/google": { "optional": true },
-    "@ai-sdk/openai-compatible": { "optional": true },
-    "@ai-sdk/xai": { "optional": true },
-    "@ai-sdk/deepseek": { "optional": true },
-    "@browser-ai/web-llm": { "optional": true },
-    "@browser-ai/core": { "optional": true },
-    "@mlc-ai/web-llm": { "optional": true },
-    "@modelcontextprotocol/sdk": { "optional": true }
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/google": {
+      "optional": true
+    },
+    "@ai-sdk/openai-compatible": {
+      "optional": true
+    },
+    "@ai-sdk/xai": {
+      "optional": true
+    },
+    "@ai-sdk/deepseek": {
+      "optional": true
+    },
+    "@browser-ai/web-llm": {
+      "optional": true
+    },
+    "@browser-ai/core": {
+      "optional": true
+    },
+    "@mlc-ai/web-llm": {
+      "optional": true
+    },
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^3.0.92",
