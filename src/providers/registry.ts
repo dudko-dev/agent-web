@@ -30,7 +30,14 @@ const PROVIDER_PACKAGE: Record<Exclude<ProviderType, 'gateway' | 'web-llm'>, str
 
 const loadProvider = async <T>(pkg: string): Promise<T> => {
   try {
-    return (await import(/* @vite-ignore */ pkg)) as T
+    // A variable dynamic import of an optional peer. Both bundler hints are
+    // required: without `webpackIgnore` webpack emits "Critical dependency:
+    // the request of a dependency is an expression" (an error under CI) and
+    // tries to build a context module; without `@vite-ignore` Vite warns.
+    // Bundlers thus leave the import to the runtime — bundler-less pages map
+    // the bare specifier via an import map (see README), and hosts that never
+    // use cloud providers (e.g. local WebLLM only) are unaffected.
+    return (await import(/* webpackIgnore: true */ /* @vite-ignore */ pkg)) as T
   } catch {
     throw new Error(
       `Provider package "${pkg}" is not installed. Add it to your app: npm install ${pkg}`,
