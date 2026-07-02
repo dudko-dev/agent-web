@@ -1,0 +1,152 @@
+{
+  "name": "@dudko.dev/agent-web",
+  "version": "0.0.1",
+  "description": "Headless, configurable in-browser LLM agent on the Vercel AI SDK: multi-provider bring-your-own-key (OpenAI, Anthropic, Google, xAI, DeepSeek, gateway, openai-compatible) AND local WebGPU/WebLLM, native + prompted tool-calling, structured output, an encrypted IndexedDB token vault, and a plan → execute → replan → synthesize loop. UI-agnostic.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./mcp": {
+      "import": { "types": "./dist/mcp.d.ts", "default": "./dist/mcp.js" },
+      "require": { "types": "./dist/mcp.d.cts", "default": "./dist/mcp.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning tests/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "pretest": "npm run build"
+  },
+  "keywords": [
+    "agent",
+    "ai-agent",
+    "llm",
+    "llm-agent",
+    "browser",
+    "in-browser",
+    "ai-sdk",
+    "vercel-ai-sdk",
+    "webgpu",
+    "webllm",
+    "mlc",
+    "openai",
+    "anthropic",
+    "google",
+    "gemini",
+    "xai",
+    "deepseek",
+    "ai-gateway",
+    "byok",
+    "mcp",
+    "offline",
+    "private",
+    "planner",
+    "replanner",
+    "plan-execute",
+    "tool-use",
+    "function-calling",
+    "structured-output",
+    "indexeddb",
+    "webcrypto",
+    "vault",
+    "memory",
+    "headless",
+    "typescript"
+  ],
+  "author": {
+    "name": "Siarhei Dudko",
+    "email": "siarhei@dudko.dev",
+    "url": "https://dudko.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dudko-dev/agent-web.git"
+  },
+  "homepage": "https://github.com/dudko-dev/agent-web#readme",
+  "bugs": {
+    "url": "https://github.com/dudko-dev/agent-web/issues"
+  },
+  "funding": [
+    {
+      "type": "individual",
+      "url": "http://dudko.dev/donate"
+    },
+    {
+      "type": "buymeacoffee",
+      "url": "https://www.buymeacoffee.com/dudko.dev"
+    },
+    {
+      "type": "paypal",
+      "url": "https://paypal.me/dudkodev"
+    },
+    {
+      "type": "patreon",
+      "url": "https://patreon.com/dudko_dev"
+    }
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ai": "^6.0.218",
+    "idb": "^8.0.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@ai-sdk/openai": "^3.0.0",
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/google": "^3.0.0",
+    "@ai-sdk/openai-compatible": "^2.0.0",
+    "@ai-sdk/xai": "^3.0.0",
+    "@ai-sdk/deepseek": "^2.0.0",
+    "@browser-ai/web-llm": "^2.0.0",
+    "@browser-ai/core": "^2.0.0",
+    "@mlc-ai/web-llm": ">=0.2.70",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/openai": { "optional": true },
+    "@ai-sdk/anthropic": { "optional": true },
+    "@ai-sdk/google": { "optional": true },
+    "@ai-sdk/openai-compatible": { "optional": true },
+    "@ai-sdk/xai": { "optional": true },
+    "@ai-sdk/deepseek": { "optional": true },
+    "@browser-ai/web-llm": { "optional": true },
+    "@browser-ai/core": { "optional": true },
+    "@mlc-ai/web-llm": { "optional": true },
+    "@modelcontextprotocol/sdk": { "optional": true }
+  },
+  "devDependencies": {
+    "@ai-sdk/anthropic": "^3.0.92",
+    "@ai-sdk/deepseek": "^2.0.44",
+    "@ai-sdk/google": "^3.0.88",
+    "@ai-sdk/openai": "^3.0.80",
+    "@ai-sdk/openai-compatible": "^2.0.56",
+    "@ai-sdk/xai": "^3.0.102",
+    "@browser-ai/core": "^2.1.12",
+    "@browser-ai/web-llm": "^2.1.7",
+    "@mlc-ai/web-llm": "^0.2.84",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^22.9.0",
+    "fake-indexeddb": "^6.2.5",
+    "prettier": "^3.3.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.6.0"
+  }
+}
