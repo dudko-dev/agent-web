@@ -89,17 +89,28 @@ jobs:
       # bundles npm 10.x.
       #
       # Auth strategy:
-      #   - Preferred: npm Trusted Publishing (OIDC). No secret needed.
-      #   - Bootstrap / fallback: NPM_TOKEN repo secret.
+      #   - Preferred: npm Trusted Publishing (OIDC). No secret needed — but it
+      #     only works for a package that ALREADY exists on npm with this repo
+      #     registered as a trusted publisher.
+      #   - Bootstrap / fallback: NPM_TOKEN repo secret. npm only reads a token
+      #     from .npmrc (a NODE_AUTH_TOKEN env var alone is ignored), so we
+      #     write .npmrc explicitly — and only when the secret is set, because
+      #     an empty _authToken line would break the OIDC path.
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
         run: |
           set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >>"$HOME/.npmrc"
+            echo "::notice::Publishing with the NPM_TOKEN secret (bootstrap/fallback)."
+          else
+            echo "::notice::No NPM_TOKEN secret; relying on npm Trusted Publishing (OIDC)."
+          fi
           echo "Publishing with:"
           npx -y npm@11.5.1 --version
           npx -y npm@11.5.1 publish --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # `npm publish` (prepublishOnly) already built dist/, including the
       # standalone browser bundle. Package the release assets:
