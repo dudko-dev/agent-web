@@ -16,6 +16,12 @@ agent — with host-defined **tools**, optional **MCP**, **system prompts**,
 **IndexedDB** storage, and an **encrypted token vault**. UI-agnostic: it streams
 typed events; you render them however you like.
 
+[![npm](https://img.shields.io/npm/v/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
+[![npm](https://img.shields.io/npm/dy/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
+[![NpmLicense](https://img.shields.io/npm/l/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
+![GitHub last commit](https://img.shields.io/github/last-commit/dudko-dev/agent-web.svg)
+![GitHub release](https://img.shields.io/github/release/dudko-dev/agent-web.svg)
+
 > Browser sibling of the Node package
 > [`@dudko.dev/agent`](https://www.npmjs.com/package/@dudko.dev/agent).
 
