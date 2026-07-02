@@ -28,11 +28,14 @@ const toSteps = (
 export const createPlan = async (
   ctx: AgentContext,
   goal: string,
+  /** Extra instruction appended to the goal (used by the empty-plan retry). */
+  nudge?: string,
 ): Promise<{ plan: IPlan; usage: IUsage }> => {
   const state = await ctx.state()
+  const effectiveGoal = nudge ? `${goal}\n\n${nudge}` : goal
   const commonFor = (mode: ToolCallMode) => {
     const parts = ctx.prompts.planner({
-      goal,
+      goal: effectiveGoal,
       state,
       toolCatalog: ctx.toolCatalog,
       mode,
@@ -51,12 +54,14 @@ export const createPlan = async (
   if (ctx.plannerMode === 'native') {
     try {
       const result = await generateStructured(ctx.plannerModel, PlanSchema, commonFor('native'))
+      ctx.log.debug('planner (native):', result.object)
       return {
         plan: { thought: result.object.thought, steps: toSteps(result.object.steps) },
         usage: normalizeUsage(result.usage),
       }
     } catch (err) {
       // Graceful degradation: fall back to the salvage parser instead of failing.
+      ctx.log.warn('planner: native structured output failed, salvaging:', asMessage(err))
       ctx.emit({ type: 'retry', phase: 'plan', attempt: 1, error: asMessage(err) })
     }
   }
@@ -66,6 +71,8 @@ export const createPlan = async (
   // when the schema-constrained call just failed.
   const result = await generate(ctx.plannerModel, commonFor('prompted'))
   const parsed = parsePlannerResponse(result.text)
+  ctx.log.debug('planner (prompted) raw:', result.text)
+  ctx.log.debug('planner (prompted) parsed:', parsed)
   return {
     plan: {
       thought: parsed.reply,

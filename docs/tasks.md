@@ -38,7 +38,24 @@ Status of the work. See [design.md](./design.md) for the architecture,
       (fake-indexeddb), parsers, prompts, tool-mode, prompted dispatch, and a
       full prompted end-to-end run via `MockLanguageModelV3`.
 
+## Added after the universal rebuild
+
+- [x] **Eager model preload** — `createWebLLMModel` now defaults to
+      `preload: true` (1-token warm-up), so weights download during creation
+      with `initProgressCallback` firing, not silently on the first message;
+      `preloadWebLLMModel` / `unloadWebLLMModel` helpers exported (the latter
+      frees GPU memory best-effort when switching models).
+- [x] **Leveled logger** — `logLevel` ('silent'|'error'|'warn'|'info'|'debug',
+      default 'warn') + console-like `logger` sink in the config; phases log
+      raw outputs (debug), plans/steps/tool calls (info), empty plans, no-tool
+      steps, failed tools and salvage fallbacks (warn). `createLogger` exported.
+- [x] **Empty-plan retry** — when the planner returns no steps for a multi-word
+      goal (small models sometimes reply "done!" with an empty plan and the run
+      would claim success without acting), the runner retries once with an
+      explicit nudge before treating the turn as conversational.
+
 ## Next
+
 
 - [ ] **`./react` subpath** — a `useAgent` hook (kept out of core to stay
       UI-agnostic).

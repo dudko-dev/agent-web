@@ -23,7 +23,12 @@ export type {
 
 // ── Providers / models ───────────────────────────────────────────────────────
 export { buildModelFromStage, resolveStage, resolveModel } from './providers/registry.js'
-export { createWebLLMModel, isWebGPUAvailable } from './providers/webllm.js'
+export {
+  createWebLLMModel,
+  preloadWebLLMModel,
+  unloadWebLLMModel,
+  isWebGPUAvailable,
+} from './providers/webllm.js'
 export type { WebLLMModelOptions } from './providers/webllm.js'
 export {
   supportsNativeTools,
@@ -105,3 +110,7 @@ export type {
 
 // ── Events ───────────────────────────────────────────────────────────────────
 export type { AgentEvent, AgentEventHandler, ReplanMode, Phase } from './events.js'
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+export { createLogger } from './logger.js'
+export type { AgentLogger, AgentLoggerSink, LogLevel } from './logger.js'

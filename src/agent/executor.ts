@@ -73,11 +73,17 @@ export const executeStep = async (
     timeoutMs: ctx.config.chatTimeoutMs,
     callbacks: {
       onTextDelta: (delta) => ctx.emit({ type: 'step.text-delta', step, delta }),
-      onToolCall: (name, input) => ctx.emit({ type: 'step.tool-call', step, name, input }),
-      onToolResult: (name, output, ok) =>
-        ctx.emit({ type: 'step.tool-result', step, name, output, ok }),
+      onToolCall: (name, input) => {
+        ctx.log.info(`tool call: ${name}`, input)
+        ctx.emit({ type: 'step.tool-call', step, name, input })
+      },
+      onToolResult: (name, output, ok) => {
+        ctx.log.debug(`tool result: ${name} ${ok ? 'ok' : 'FAILED'}`, output)
+        ctx.emit({ type: 'step.tool-result', step, name, output, ok })
+      },
     },
   })
+  ctx.log.debug('executor text:', loop.text)
 
   const { summary, blocked } = splitBlocker(loop.text)
   return {

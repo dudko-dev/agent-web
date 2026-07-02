@@ -22,6 +22,7 @@ import {
 import { createPlan } from './planner.js'
 import { decideReplan } from './replanner.js'
 import { synthesizeAnswer } from './synthesizer.js'
+import { createLogger } from '../logger.js'
 
 export interface RunOptions {
   onEvent?: AgentEventHandler
@@ -98,6 +99,10 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   )
   const toolCatalog = renderCatalog(tools)
   const prompts: Prompts = { ...defaultPrompts, ...config.prompts }
+  const log = createLogger(cfg.logLevel, config.logger)
+  log.info(
+    `agent ready — tools: [${Object.keys(tools).join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}`,
+  )
 
   const run = async (goal: string, opts: RunOptions = {}): Promise<RunResult> => {
     const emit = (event: AgentEvent): void => {
@@ -162,16 +167,41 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       toolCatalog,
       prompts,
       emit,
+      log,
       signal: opts.signal,
       state,
       history,
     }
     await remember({ role: 'user', content: text })
+    log.info('run:', text)
 
     try {
       // 1) PLAN
-      const planned = await createPlan(ctx, text)
+      let planned = await createPlan(ctx, text)
       bumpUsage(planned.usage, 'plan')
+      if (isAborted()) {
+        emit({ type: 'stopped' })
+        result.stopped = true
+        return result
+      }
+
+      // Small models sometimes return an empty plan for a clearly actionable
+      // goal — and put a hallucinated "done!" into the thought, so the run
+      // would claim success while never touching a tool. Give the planner one
+      // nudged retry before treating the turn as conversational.
+      if (planned.plan.steps.length === 0 && text.split(/\s+/).length > 2) {
+        log.warn(
+          'planner returned no steps for a multi-word goal — retrying with a nudge. thought:',
+          planned.plan.thought,
+        )
+        const retried = await createPlan(
+          ctx,
+          text,
+          'NOTE: If the message above asks to build, add, change, clear or delete ANYTHING, you MUST output 1-6 concrete steps. Output an empty plan ONLY for a pure greeting or question.',
+        )
+        bumpUsage(retried.usage, 'plan')
+        if (retried.plan.steps.length > 0) planned = retried
+      }
       result.plan = planned.plan
       if (isAborted()) {
         emit({ type: 'stopped' })
@@ -181,12 +211,17 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
       // Greeting / question / unclear → answer directly, run no tools.
       if (planned.plan.steps.length === 0) {
+        log.info('no plan — answering directly (no tools will run)')
         const answer = planned.plan.thought.trim() || "Tell me what you'd like to do."
         emit({ type: 'final', text: answer })
         await remember({ role: 'assistant', content: answer })
         result.final = answer
         return result
       }
+      log.info(
+        `plan (${planned.plan.steps.length} steps):`,
+        planned.plan.steps.map((s) => s.description),
+      )
       emit({ type: 'plan.created', plan: planned.plan })
       planned.plan.steps.forEach((step, index) => emit({ type: 'plan.step-added', step, index }))
 
@@ -229,6 +264,16 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         const failed = stepResult.toolCalls.length - applied
         result.applied += applied
         result.steps = stepNo
+        log.info(
+          `step ${stepNo}/${total} "${step.description}" — ${stepResult.toolCalls.length} tool call(s), ${applied} ok${failed ? `, ${failed} FAILED` : ''}${stepResult.blocked ? ', BLOCKED' : ''}`,
+        )
+        if (stepResult.toolCalls.length === 0) {
+          log.warn(`step ${stepNo} made no tool calls — nothing changed in this step`)
+        }
+        stepResult.toolCalls
+          .filter((c) => !c.ok)
+          .forEach((c) => log.warn(`tool ${c.name} failed:`, c.output))
+        log.debug(`step ${stepNo} detail:`, stepResult)
         emit({ type: 'step.complete', step, result: stepResult })
         done.push(
           `${step.description} — ${applied} applied${failed ? `, ${failed} failed` : ''}${stepResult.blocked ? ', blocked' : ''}`,
@@ -283,6 +328,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           /* keep the default */
         }
       }
+      log.info(`done — ${result.applied} tool call(s) applied over ${result.steps} step(s)`)
       emit({ type: 'final', text: summary })
       await remember({ role: 'assistant', content: summary })
       result.final = summary

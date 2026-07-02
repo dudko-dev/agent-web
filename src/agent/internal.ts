@@ -5,6 +5,7 @@ import type { StoredMessage } from '../memory/store.js'
 import type { Prompts, ToolCallMode } from '../prompts.js'
 import { withSystem } from '../prompts.js'
 import type { AgentToolSet } from '../tools/types.js'
+import type { AgentLogger } from '../logger.js'
 
 /** Everything the phase functions (planner/executor/replanner/synthesizer) share. */
 export interface AgentContext {
@@ -21,6 +22,8 @@ export interface AgentContext {
   toolCatalog: string
   prompts: Prompts
   emit: (event: AgentEvent) => void
+  /** Leveled logger (config.logLevel over config.logger ?? console). */
+  log: AgentLogger
   signal?: AbortSignal
   /** Current world state for grounding, or undefined when no describeState is configured. */
   state: () => Promise<string | undefined>

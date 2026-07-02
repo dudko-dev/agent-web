@@ -1,4 +1,5 @@
 import type { ContextStore } from './memory/store.js'
+import type { AgentLoggerSink, LogLevel } from './logger.js'
 import type { ModelInput, StageInput } from './providers/types.js'
 import type { Prompts } from './prompts.js'
 import type { CredentialStore } from './secrets/store.js'
@@ -75,6 +76,11 @@ export interface BrowserAgentConfig {
   synthesize?: boolean
   /** Compress stored history past this many chars (0 = off, default 12000). */
   compressAfterChars?: number
+
+  /** Verbosity: 'silent' | 'error' | 'warn' (default) | 'info' | 'debug'. */
+  logLevel?: LogLevel
+  /** Console-like sink the logs go to (default: the global console). */
+  logger?: AgentLoggerSink
 }
 
 export interface ResolvedConfig {
@@ -91,6 +97,7 @@ export interface ResolvedConfig {
   replan: boolean
   synthesize: boolean
   compressAfterChars: number
+  logLevel: LogLevel
 }
 
 export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
@@ -112,4 +119,5 @@ export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
   replan: c.replan ?? true,
   synthesize: c.synthesize ?? true,
   compressAfterChars: c.compressAfterChars ?? 12_000,
+  logLevel: c.logLevel ?? 'warn',
 })

@@ -169,9 +169,12 @@ test('memory: prior session turns are read back into the planner prompt', async 
   const agent = await createAgent({ model, toolMode: 'prompted', memory, sessionId: 's1' })
   await agent.run('make it bigger')
 
-  assert.equal(plannerPrompts.length, 1)
+  // Two planner calls: the first returned an empty plan for a multi-word goal,
+  // so the runner retried once with an explicit nudge before answering.
+  assert.equal(plannerPrompts.length, 2)
   assert.match(plannerPrompts[0], /CONVERSATION SO FAR/)
   assert.match(plannerPrompts[0], /add a blue title/)
+  assert.match(plannerPrompts[1], /you MUST output 1-6 concrete steps/)
   // The transcript now also holds the new turn.
   const after = await memory.load('s1')
   assert.equal(after.length, 4)
