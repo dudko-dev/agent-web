@@ -25,6 +25,11 @@ typed events; you render them however you like.
 > Browser sibling of the Node package
 > [`@dudko.dev/agent`](https://www.npmjs.com/package/@dudko.dev/agent).
 
+> **Using React?** [`@dudko.dev/agent-web-react`](https://www.npmjs.com/package/@dudko.dev/agent-web-react)
+> wraps this core in a `useAgent` hook, an `<AgentProvider>` context and drop-in
+> UI components — try the **[live demo](https://dudko-dev.github.io/agent-web-react/)**
+> ([source](https://github.com/dudko-dev/agent-web-react)).
+
 ## Install
 
 ```bash
@@ -208,6 +213,10 @@ enters your core bundle.
 - [docs/providers.md](docs/providers.md) — every provider, CORS & direct-vs-proxy.
 - [docs/security.md](docs/security.md) — the token vault & its threat model.
 - [docs/tasks.md](docs/tasks.md) — status & roadmap.
+- [`@dudko.dev/agent-web-react`](https://www.npmjs.com/package/@dudko.dev/agent-web-react) —
+  React bindings (`useAgent`, `<AgentProvider>`, pre-styled components) ·
+  [live demo](https://dudko-dev.github.io/agent-web-react/) ·
+  [source](https://github.com/dudko-dev/agent-web-react).
 - [`@dudko.dev/agent`](https://www.npmjs.com/package/@dudko.dev/agent) — the
   Node/server sibling (stdio MCP, persistence/resume, OpenTelemetry, CLI).
 

@@ -1,6 +1,6 @@
 {
   "name": "@dudko.dev/agent-web",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Headless, configurable in-browser LLM agent on the Vercel AI SDK: multi-provider bring-your-own-key (OpenAI, Anthropic, Google, xAI, DeepSeek, gateway, openai-compatible) AND local WebGPU/WebLLM, native + prompted tool-calling, structured output, an encrypted IndexedDB token vault, and a plan → execute → replan → synthesize loop. UI-agnostic.",
   "type": "module",
   "sideEffects": false,
