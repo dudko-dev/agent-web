@@ -23,6 +23,8 @@ export interface PlannerPromptContext {
   state?: string
   toolCatalog: string
   mode: ToolCallMode
+  /** Prior session messages (oldest first), for resolving references to earlier turns. */
+  history?: { role: string; content: string }[]
 }
 export interface ExecutorPromptContext {
   goal: string
@@ -59,11 +61,22 @@ const numbered = (items: string[], empty: string): string =>
 
 const stateBlock = (state?: string): string => (state && state.trim() ? `\n\nSTATE:\n${state}` : '')
 
+const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
+
+// The last few session messages, capped so a long transcript can't crowd out
+// the goal (memory compression keeps the full story in a summary message).
+const historyBlock = (history?: { role: string; content: string }[]): string => {
+  if (!history || history.length === 0) return ''
+  const lines = history.slice(-8).map((m) => `${m.role}: ${clip(m.content, 400)}`)
+  return `\n\nCONVERSATION SO FAR:\n${lines.join('\n')}`
+}
+
 // --- planner ---------------------------------------------------------------
 
 const PLANNER_NATIVE = `You are the PLANNER of a tool-using agent that changes a workspace step by step.
 Produce a brief "thought" and an ordered "steps" list (1–6 DISTINCT, self-contained steps) grounded in the current STATE and the available TOOLS.
 If the user only greets, thanks, makes small talk, asks a question, or is unclear: return an EMPTY steps list and put a short, friendly answer in "thought".
+If a CONVERSATION SO FAR section is present, use it to resolve references to earlier turns.
 Never repeat or pad steps.`
 
 const PLANNER_PROMPTED = `You are the PLANNER of a tool-using agent that changes a workspace step by step.
@@ -72,7 +85,8 @@ Reply with a single JSON object, nothing else:
 { "reply": string, "plan": string[] }
 - Only produce a "plan" when the user CLEARLY asks to build, do, or change something. For a greeting, small talk, thanks, a question, or an unclear/empty request: set "plan": [] and put a short, friendly "reply".
 - For a real goal: "reply" is one short sentence; "plan" is 1–6 DISTINCT, self-contained steps. Never repeat or pad steps.
-- Plan realistic steps the available TOOLS can perform, grounded in the current STATE.`
+- Plan realistic steps the available TOOLS can perform, grounded in the current STATE.
+- If a CONVERSATION SO FAR section is present, use it to resolve references to earlier turns.`
 
 // --- executor --------------------------------------------------------------
 
@@ -110,7 +124,7 @@ const SYNTHESIZER_SYSTEM = `You are the SYNTHESIZER. In 1–3 short, friendly se
 export const defaultPrompts: Prompts = {
   planner: (ctx) => ({
     system: ctx.mode === 'prompted' ? PLANNER_PROMPTED : PLANNER_NATIVE,
-    prompt: `GOAL: ${ctx.goal}${stateBlock(ctx.state)}\n\nTOOLS:\n${ctx.toolCatalog}`,
+    prompt: `GOAL: ${ctx.goal}${historyBlock(ctx.history)}${stateBlock(ctx.state)}\n\nTOOLS:\n${ctx.toolCatalog}`,
   }),
   executor: (ctx) => ({
     system: ctx.mode === 'prompted' ? EXECUTOR_PROMPTED : EXECUTOR_NATIVE,

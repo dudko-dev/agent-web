@@ -1,12 +1,14 @@
 {
   "name": "@dudko.dev/agent-web",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Headless, configurable in-browser LLM agent on the Vercel AI SDK: multi-provider bring-your-own-key (OpenAI, Anthropic, Google, xAI, DeepSeek, gateway, openai-compatible) AND local WebGPU/WebLLM, native + prompted tool-calling, structured output, an encrypted IndexedDB token vault, and a plan → execute → replan → synthesize loop. UI-agnostic.",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "unpkg": "./dist/agent-web.js",
+  "jsdelivr": "./dist/agent-web.js",
   "exports": {
     ".": {
       "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
@@ -16,6 +18,7 @@
       "import": { "types": "./dist/mcp.d.ts", "default": "./dist/mcp.js" },
       "require": { "types": "./dist/mcp.d.cts", "default": "./dist/mcp.cjs" }
     },
+    "./bundle": { "types": "./dist/index.d.ts", "import": "./dist/agent-web.js" },
     "./package.json": "./package.json"
   },
   "files": [

@@ -25,7 +25,12 @@ Status of the work. See [design.md](./design.md) for the architecture,
       synthesize, grounded, time-boxed, `AbortSignal`, typed events; graceful
       native→prompted degradation.
 - [x] **Memory** — `ContextStore` + `MemoryStore` + `IndexedDBStore` (session
-      list/delete) + `compressHistory`.
+      list/delete) + `compressHistory`; recent turns are read back into the
+      planner prompt so follow-up goals can reference earlier ones.
+- [x] **Tool filtering** — `availableTools` whitelist / `excludedTools`
+      blacklist; `plan-narrowed` selection honoured on both tool paths.
+- [x] **Streaming final answer** — the synthesizer streams `final.text-delta`
+      (suppressed when the model drifts into JSON).
 - [x] **MCP** — optional `./mcp` subpath: HTTP (StreamableHTTP) connector.
 - [x] **Packaging** — tsup ESM + CJS + d.ts, `.`/`./mcp` entries, optional peers,
       **no `node:*` in the core bundle**.

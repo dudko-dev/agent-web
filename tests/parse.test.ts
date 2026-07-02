@@ -33,6 +33,18 @@ test('planner: salvages a truncated / looping plan', () => {
   assert.deepEqual(r.plan, ['Add a customer line'])
 })
 
+test('planner salvage: never sweeps fields that follow the plan array', () => {
+  // Valid array, truncated LATER in the object — "reply" must not become a step.
+  const r = parsePlannerResponse('{ "plan": ["Add title", "Add total"], "reply": "Sure, I')
+  assert.deepEqual(r.plan, ['Add title', 'Add total'])
+})
+
+test('planner salvage: decodes JSON escapes in salvaged strings', () => {
+  const r = parsePlannerResponse('{ "reply": "OK", "plan": ["Say \\"hi\\"", "Add a second')
+  assert.deepEqual(r.plan, ['Say "hi"'])
+  assert.equal(r.reply, 'OK')
+})
+
 test('planner: never surfaces raw JSON as the reply', () => {
   const r = parsePlannerResponse('{ "reply": "Ok", "plan": ["Set background", "Add title')
   assert.equal(r.reply, 'Ok')

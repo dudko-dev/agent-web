@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod'
-import { defineTool, renderCatalog, dispatch, selectToolMode } from '../dist/index.js'
+import { MockLanguageModelV3 } from 'ai/test'
+import { defineTool, renderCatalog, dispatch, selectToolMode, runToolLoop } from '../dist/index.js'
 
 const tools = {
   add: defineTool({
@@ -40,4 +41,56 @@ test('selectToolMode: cloud → native, local → prompted, explicit wins', () =
   assert.equal(selectToolMode({ provider: 'web-llm' } as never, 'auto'), 'prompted')
   assert.equal(selectToolMode({ provider: 'browser-ai' } as never, 'auto'), 'prompted')
   assert.equal(selectToolMode({ provider: 'web-llm' } as never, 'native'), 'native')
+})
+
+test('selectToolMode: gateway ids stay native even when the MODEL name matches LOCAL_RE', () => {
+  assert.equal(selectToolMode('openai/gpt-5-nano', 'auto'), 'native')
+  assert.equal(selectToolMode('google/gemini-2.5-flash', 'auto'), 'native')
+})
+
+const promptedModel = (text: string) =>
+  new MockLanguageModelV3({
+    doGenerate: async () => ({
+      content: [{ type: 'text', text }],
+      finishReason: 'stop',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      warnings: [],
+    }),
+  })
+
+test('runToolLoop prompted: activeTools bounds dispatch (plan-narrowed parity)', async () => {
+  const model = promptedModel(
+    JSON.stringify({ reply: 'ok', actions: [{ tool: 'add', args: { x: 1 } }] }),
+  )
+  const narrowed = await runToolLoop(model, {
+    mode: 'prompted',
+    prompt: 'go',
+    tools,
+    activeTools: [],
+  })
+  assert.equal(narrowed.toolCalls.length, 1)
+  assert.equal(narrowed.toolCalls[0].ok, false)
+  assert.match(String(narrowed.toolCalls[0].output), /unknown tool/)
+
+  const allowed = await runToolLoop(model, {
+    mode: 'prompted',
+    prompt: 'go',
+    tools,
+    activeTools: ['add'],
+  })
+  assert.equal(allowed.toolCalls[0].ok, true)
+  assert.equal(allowed.toolCalls[0].output, 2)
+})
+
+test('runToolLoop prompted: the text delta is the parsed reply, never raw JSON', async () => {
+  const model = promptedModel(JSON.stringify({ reply: 'Did it.', actions: [] }))
+  const deltas: string[] = []
+  const r = await runToolLoop(model, {
+    mode: 'prompted',
+    prompt: 'go',
+    tools,
+    callbacks: { onTextDelta: (d: string) => deltas.push(d) },
+  })
+  assert.equal(r.text, 'Did it.')
+  assert.deepEqual(deltas, ['Did it.'])
 })

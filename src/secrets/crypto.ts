@@ -10,15 +10,7 @@ const webcrypto = (): Crypto => {
   return c
 }
 
-/**
- * Fetch (or lazily create) the vault's AES-GCM key. The key is generated
- * NON-EXTRACTABLE and stored as a live `CryptoKey` in IndexedDB — a CryptoKey
- * is structured-cloneable, so it persists across reloads WITHOUT its raw bytes
- * ever being exposed to JavaScript. Not even in-page script can read it out; it
- * can only be used to encrypt / decrypt. That is what makes at-rest storage of
- * the secrets meaningful (see IndexedDBVault's threat model).
- */
-export const getOrCreateVaultKey = async (dbName?: string): Promise<CryptoKey> => {
+const loadOrCreateKey = async (dbName?: string): Promise<CryptoKey> => {
   const db = await openAgentWebDB({ dbName })
   const existing = (await db.get(KEYS_STORE, KEY_ID)) as CryptoKey | undefined
   if (existing) return existing
@@ -27,8 +19,45 @@ export const getOrCreateVaultKey = async (dbName?: string): Promise<CryptoKey> =
     /* extractable */ false,
     ['encrypt', 'decrypt'],
   )
-  await db.put(KEYS_STORE, key, KEY_ID)
+  // Double-check inside one readwrite transaction: another tab may have created
+  // a key while ours was generating. Losing that race and overwriting would
+  // leave the other tab's secrets permanently undecryptable.
+  const tx = db.transaction(KEYS_STORE, 'readwrite')
+  const winner = (await tx.store.get(KEY_ID)) as CryptoKey | undefined
+  if (winner) {
+    await tx.done
+    return winner
+  }
+  await tx.store.put(key, KEY_ID)
+  await tx.done
   return key
+}
+
+const keyCache = new Map<string, Promise<CryptoKey>>()
+
+/**
+ * Fetch (or lazily create) the vault's AES-GCM key. The key is generated
+ * NON-EXTRACTABLE and stored as a live `CryptoKey` in IndexedDB — a CryptoKey
+ * is structured-cloneable, so it persists across reloads WITHOUT its raw bytes
+ * ever being exposed to JavaScript. Not even in-page script can read it out; it
+ * can only be used to encrypt / decrypt. That is what makes at-rest storage of
+ * the secrets meaningful (see IndexedDBVault's threat model).
+ *
+ * Concurrent callers share one in-flight promise per DB, and creation is
+ * double-checked in a single IDB transaction, so two racing writers can never
+ * end up encrypting under different keys.
+ */
+export const getOrCreateVaultKey = (dbName?: string): Promise<CryptoKey> => {
+  const cacheKey = dbName ?? 'agent-web'
+  let p = keyCache.get(cacheKey)
+  if (!p) {
+    p = loadOrCreateKey(dbName)
+    keyCache.set(cacheKey, p)
+    p.catch(() => {
+      if (keyCache.get(cacheKey) === p) keyCache.delete(cacheKey)
+    })
+  }
+  return p
 }
 
 export interface EncryptedBlob {

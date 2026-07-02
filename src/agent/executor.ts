@@ -1,4 +1,5 @@
 import { runToolLoop } from '../llm/tool-loop.js'
+import { renderCatalog } from '../tools/prompted.js'
 import type { IPlanStep, IStepResult, IUsage } from './loop-types.js'
 import { systemFor, type AgentContext } from './internal.js'
 
@@ -40,13 +41,21 @@ export const executeStep = async (
   done: string[],
 ): Promise<{ result: IStepResult; usage: IUsage }> => {
   const state = await ctx.state()
+  // Under plan-narrowed selection the prompted path must also see the narrowed
+  // catalogue — the prompt is its only tool surface (native mode gets the SDK's
+  // activeTools instead and never renders the catalogue).
+  const active = activeToolNames(ctx, step)
+  const toolCatalog =
+    active === undefined
+      ? ctx.toolCatalog
+      : renderCatalog(Object.fromEntries(active.map((name) => [name, ctx.tools[name]])))
   const parts = ctx.prompts.executor({
     goal,
     state,
     step: step.description,
     index,
     total,
-    toolCatalog: ctx.toolCatalog,
+    toolCatalog,
     done,
     mode: ctx.executorMode,
   })
@@ -56,7 +65,7 @@ export const executeStep = async (
     system: systemFor(ctx, parts.system),
     prompt: parts.prompt,
     tools: ctx.tools,
-    activeTools: activeToolNames(ctx, step),
+    activeTools: active,
     maxSteps: ctx.config.maxStepsPerTask,
     maxOutputTokens: ctx.config.budgets.executor,
     temperature: ctx.config.temperature,

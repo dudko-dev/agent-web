@@ -54,6 +54,18 @@ export interface Agent {
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
+/** Apply the config's availableTools whitelist and excludedTools blacklist. */
+const filterTools = (
+  all: AgentToolSet,
+  available?: string[],
+  excluded?: string[],
+): AgentToolSet => {
+  let entries = Object.entries(all)
+  if (available && available.length > 0) entries = entries.filter(([n]) => available.includes(n))
+  if (excluded && excluded.length > 0) entries = entries.filter(([n]) => !excluded.includes(n))
+  return Object.fromEntries(entries)
+}
+
 /**
  * Create a headless plan → execute → replan → synthesize agent. Models are
  * resolved eagerly (dynamic provider imports + vault key fetch), so this is
@@ -61,27 +73,29 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  */
 export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> => {
   const cfg = resolveConfig(config)
-  const [plannerModel, executorModel, synthesizerModel] = await Promise.all([
+  // Build the executor once; a stage without an override reuses it instead of
+  // constructing a second identical model (for web-llm that would mean loading
+  // the same weights into the GPU again).
+  const buildStage = (override: BrowserAgentConfig['planner'], stageName: string) =>
     buildModelFromStage(
-      resolveStage(config.model, config.planner, 'planner'),
+      resolveStage(config.model, override, stageName),
       config.credentials,
       cfg.clientName,
-    ),
-    buildModelFromStage(
-      resolveStage(config.model, undefined, 'executor'),
-      config.credentials,
-      cfg.clientName,
-    ),
-    buildModelFromStage(
-      resolveStage(config.model, config.synthesizer, 'synthesizer'),
-      config.credentials,
-      cfg.clientName,
-    ),
+    )
+  const executorP = buildStage(undefined, 'executor')
+  const [executorModel, plannerModel, synthesizerModel] = await Promise.all([
+    executorP,
+    config.planner === undefined ? executorP : buildStage(config.planner, 'planner'),
+    config.synthesizer === undefined ? executorP : buildStage(config.synthesizer, 'synthesizer'),
   ])
 
   const plannerMode = selectToolMode(plannerModel, cfg.toolMode)
   const executorMode = selectToolMode(executorModel, cfg.toolMode)
-  const tools: AgentToolSet = config.tools ?? {}
+  const tools: AgentToolSet = filterTools(
+    config.tools ?? {},
+    config.availableTools,
+    config.excludedTools,
+  )
   const toolCatalog = renderCatalog(tools)
   const prompts: Prompts = { ...defaultPrompts, ...config.prompts }
 
@@ -110,21 +124,6 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
     const state = async (): Promise<string | undefined> =>
       config.describeState ? config.describeState() : undefined
-    const ctx: AgentContext = {
-      config: cfg,
-      raw: config,
-      plannerModel,
-      executorModel,
-      synthesizerModel,
-      plannerMode,
-      executorMode,
-      tools,
-      toolCatalog,
-      prompts,
-      emit,
-      signal: opts.signal,
-      state,
-    }
     const isAborted = (): boolean => opts.signal?.aborted === true
     const bumpUsage = (u: IUsage, phase: Phase): void => {
       usage = addUsage(usage, u)
@@ -141,6 +140,32 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     }
 
     emit({ type: 'run.start', goal: text })
+    // Read back the session transcript BEFORE appending the current goal, so
+    // the planner can resolve references to earlier turns ("make it bigger").
+    let history: StoredMessage[] = []
+    if (config.memory) {
+      try {
+        history = await config.memory.load(sessionId)
+      } catch {
+        /* persistence is best-effort */
+      }
+    }
+    const ctx: AgentContext = {
+      config: cfg,
+      raw: config,
+      plannerModel,
+      executorModel,
+      synthesizerModel,
+      plannerMode,
+      executorMode,
+      tools,
+      toolCatalog,
+      prompts,
+      emit,
+      signal: opts.signal,
+      state,
+      history,
+    }
     await remember({ role: 'user', content: text })
 
     try {
@@ -188,6 +213,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           bumpUsage(out.usage, 'execute')
           stepResult = out.result
         } catch (err) {
+          // A user abort surfaces as a thrown AbortError — that is a stop, not
+          // a step failure.
+          if (isAborted()) {
+            emit({ type: 'stopped' })
+            result.stopped = true
+            return result
+          }
           emit({ type: 'error', phase: 'execute', error: errMessage(err) })
           stepResult = { step, summary: errMessage(err), toolCalls: [], blocked: true }
         }
@@ -202,10 +234,10 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           `${step.description} — ${applied} applied${failed ? `, ${failed} failed` : ''}${stepResult.blocked ? ', blocked' : ''}`,
         )
 
-        // 2b) REPLAN (only after a blocked / failed step)
+        // 2b) REPLAN (only after a blocked / failed step). Also runs when the
+        // FAILED step was the last one — 'revise' can then add remedial steps.
         if (
           cfg.replan &&
-          remaining.length > 0 &&
           iter < cfg.maxIterations &&
           revisions < cfg.maxRevisions &&
           !isAborted() &&
@@ -258,11 +290,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       // 4) COMPRESS persisted history
       if (config.memory && cfg.compressAfterChars > 0) {
         try {
-          const history = await config.memory.load(sessionId)
-          const compacted = await compressHistory(history, synthesizerModel, {
+          const transcript = await config.memory.load(sessionId)
+          const compacted = await compressHistory(transcript, synthesizerModel, {
             maxChars: cfg.compressAfterChars,
+            timeoutMs: cfg.chatTimeoutMs,
+            abortSignal: opts.signal,
           })
-          if (compacted !== history) await config.memory.replace(sessionId, compacted)
+          if (compacted !== transcript) await config.memory.replace(sessionId, compacted)
         } catch {
           /* best-effort */
         }

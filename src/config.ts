@@ -35,7 +35,9 @@ export interface BrowserAgentConfig {
 
   /** Host tools the executor may call (an AI SDK ToolSet; use defineTool). */
   tools?: AgentToolSet
+  /** Whitelist: only these tool names from `tools` are mounted (default: all). */
   availableTools?: string[]
+  /** Blacklist: these tool names are removed after the whitelist is applied. */
   excludedTools?: string[]
   /** Force native/prompted tool-calling; 'auto' picks per model (default 'auto'). */
   toolMode?: ToolMode
@@ -48,7 +50,11 @@ export interface BrowserAgentConfig {
   /** Serialize the host's current world state into prompt context (grounding). */
   describeState?: () => string | Promise<string>
 
-  /** Persist the transcript (e.g. new IndexedDBStore()). */
+  /**
+   * Persist the transcript (e.g. new IndexedDBStore()). The last few messages
+   * are also read back into the planner prompt, so follow-up goals can refer
+   * to earlier turns.
+   */
   memory?: ContextStore
   sessionId?: string
 

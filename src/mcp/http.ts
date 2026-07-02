@@ -40,6 +40,10 @@ export interface ConnectMcpOptions {
 // same limit on the prefixed "server__tool" so one server can't poison a run.
 const MAX_TOOL_NAME_LEN = 64
 
+// MCP names may contain characters providers reject (dots, slashes, spaces);
+// map them into the allowed alphabet. callTool still uses the ORIGINAL name.
+const sanitizeName = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_')
+
 /**
  * Flatten an MCP tool result's content into something a model can read. Unlike
  * the Node sibling this NEVER spills to a filesystem (there isn't one in the
@@ -55,7 +59,82 @@ export const flattenContent = (content: unknown): unknown => {
   return parts.map((p) => (p?.type === 'text' && typeof p.text === 'string' ? p.text : p))
 }
 
-/** Connect to one or more HTTP MCP servers and return their tools + catalogue. */
+interface ServerMount {
+  name: string
+  client?: Client
+  mounts: { key: string; description: string; tool: ToolSet[string] }[]
+  error?: string
+}
+
+const connectOne = async (
+  name: string,
+  cfg: McpHttpServerConfig,
+  opts: ConnectMcpOptions,
+  log: NonNullable<ConnectMcpOptions['onLog']>,
+): Promise<ServerMount> => {
+  try {
+    if (cfg.headers && cfg.getHeaders) {
+      throw new Error(`MCP server "${name}": specify either headers or getHeaders, not both`)
+    }
+    const headers = cfg.getHeaders ? await cfg.getHeaders() : cfg.headers
+    const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
+      requestInit: headers ? { headers } : undefined,
+    })
+    const client = new Client({
+      name: opts.clientName ?? 'agent-web',
+      version: opts.clientVersion ?? '0.0.0',
+    })
+    await client.connect(transport)
+
+    const listed = await client.listTools()
+    const mounts: ServerMount['mounts'] = []
+    for (const t of listed.tools) {
+      const prefixed = `${sanitizeName(name)}__${sanitizeName(t.name)}`
+      if (prefixed.length > MAX_TOOL_NAME_LEN) {
+        log(
+          'warn',
+          `[mcp] ${name}: tool "${t.name}" exceeds the ${MAX_TOOL_NAME_LEN}-char name limit; skipping`,
+        )
+        continue
+      }
+      const description = t.description ?? ''
+      mounts.push({
+        key: prefixed,
+        description,
+        tool: dynamicTool({
+          description,
+          inputSchema: jsonSchema(t.inputSchema as Parameters<typeof jsonSchema>[0]),
+          execute: async (args, options) => {
+            const res = await client.callTool(
+              { name: t.name, arguments: (args ?? {}) as Record<string, unknown> },
+              undefined,
+              options?.abortSignal ? { signal: options.abortSignal } : undefined,
+            )
+            const flat = flattenContent(res.content)
+            // An MCP failure is a NORMAL response with isError set — surface it
+            // as a thrown error so both tool paths record a failed call instead
+            // of feeding the error text to the model as a success.
+            if ((res as { isError?: boolean }).isError) {
+              throw new Error(typeof flat === 'string' ? flat : JSON.stringify(flat))
+            }
+            return flat
+          },
+        }),
+      })
+    }
+    return { name, client, mounts }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    log('error', `[mcp] ${name}: failed to connect - ${message}`)
+    return { name, mounts: [], error: message }
+  }
+}
+
+/**
+ * Connect to one or more HTTP MCP servers and return their tools + catalogue.
+ * Servers connect concurrently; tools, catalogue, and results merge in the
+ * caller's declaration order, so the outcome is deterministic.
+ */
 export const connectMcpHttp = async (
   servers: Record<string, McpHttpServerConfig>,
   opts: ConnectMcpOptions = {},
@@ -66,56 +145,28 @@ export const connectMcpHttp = async (
   const catalog: McpCatalogEntry[] = []
   const results: ConnectedMcp['results'] = []
 
-  for (const [name, cfg] of Object.entries(servers)) {
-    try {
-      if (cfg.headers && cfg.getHeaders) {
-        throw new Error(`MCP server "${name}": specify either headers or getHeaders, not both`)
-      }
-      const headers = cfg.getHeaders ? await cfg.getHeaders() : cfg.headers
-      const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
-        requestInit: headers ? { headers } : undefined,
-      })
-      const client = new Client({
-        name: opts.clientName ?? 'agent-web',
-        version: opts.clientVersion ?? '0.0.0',
-      })
-      await client.connect(transport)
-      clients.set(name, client)
+  const settled = await Promise.all(
+    Object.entries(servers).map(([name, cfg]) => connectOne(name, cfg, opts, log)),
+  )
 
-      const listed = await client.listTools()
-      let mounted = 0
-      for (const t of listed.tools) {
-        const prefixed = `${name}__${t.name}`
-        if (prefixed.length > MAX_TOOL_NAME_LEN) {
-          log(
-            'warn',
-            `[mcp] ${name}: tool "${t.name}" exceeds the ${MAX_TOOL_NAME_LEN}-char name limit; skipping`,
-          )
-          continue
-        }
-        const description = t.description ?? ''
-        tools[prefixed] = dynamicTool({
-          description,
-          inputSchema: jsonSchema(t.inputSchema as Parameters<typeof jsonSchema>[0]),
-          execute: async (args, options) => {
-            const res = await client.callTool(
-              { name: t.name, arguments: (args ?? {}) as Record<string, unknown> },
-              undefined,
-              options?.abortSignal ? { signal: options.abortSignal } : undefined,
-            )
-            return flattenContent(res.content)
-          },
-        })
-        catalog.push({ name: prefixed, description, server: name })
-        mounted += 1
-      }
-      log('info', `[mcp] ${name}: ${mounted} tools mounted`)
-      results.push({ name, connected: true })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      log('error', `[mcp] ${name}: failed to connect - ${message}`)
-      results.push({ name, connected: false, error: message })
+  for (const server of settled) {
+    if (server.error !== undefined) {
+      results.push({ name: server.name, connected: false, error: server.error })
+      continue
     }
+    if (server.client) clients.set(server.name, server.client)
+    let mounted = 0
+    for (const m of server.mounts) {
+      if (tools[m.key]) {
+        log('warn', `[mcp] ${server.name}: duplicate tool name "${m.key}"; keeping the first`)
+        continue
+      }
+      tools[m.key] = m.tool
+      catalog.push({ name: m.key, description: m.description, server: server.name })
+      mounted += 1
+    }
+    log('info', `[mcp] ${server.name}: ${mounted} tools mounted`)
+    results.push({ name: server.name, connected: true })
   }
 
   return {

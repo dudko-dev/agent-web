@@ -30,6 +30,11 @@ export const openAgentWebDB = (opts: AgentWebDBOptions = {}): Promise<IDBPDataba
       },
     })
     cache.set(name, p)
+    // A failed open (private mode, storage denied) must not stay cached, or
+    // every later call would replay the same rejection forever.
+    p.catch(() => {
+      if (cache.get(name) === p) cache.delete(name)
+    })
   }
   return p
 }

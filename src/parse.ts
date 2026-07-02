@@ -84,26 +84,43 @@ export const normalizeSteps = (arr: unknown, cap = 12): string[] => {
   return out
 }
 
-/** Pull "..."-quoted strings out of a (possibly truncated) named array. */
+/** Decode a JSON string body (\" \\n \\uXXXX …); falls back to the raw text. */
+const decodeJsonString = (body: string): string => {
+  const v = tryParse(`"${body}"`)
+  return typeof v === 'string' ? v : body
+}
+
+/**
+ * Pull "..."-quoted strings out of a (possibly truncated) named array. The scan
+ * is bounded to the array itself — from its `[` to the matching `]`, or the end
+ * of the text when truncated — so values of LATER fields are never swept in.
+ */
 const salvageStringArray = (text: string, field: string): string[] => {
-  const at = text.search(new RegExp(`"${field}"\\s*:`))
-  if (at < 0) return []
-  const region = text.slice(at)
+  const m = new RegExp(`"${field}"\\s*:\\s*\\[`).exec(text)
+  if (!m) return []
   const out: string[] = []
-  const re = /"((?:[^"\\]|\\.)*)"/g
-  let skippedKey = false
-  let m: RegExpExecArray | null = re.exec(region)
-  while (m) {
-    if (skippedKey) out.push(m[1])
-    skippedKey = true // first match is the field name itself
-    m = re.exec(region)
+  let i = m.index + m[0].length
+  while (i < text.length && text[i] !== ']') {
+    if (text[i] !== '"') {
+      i += 1
+      continue
+    }
+    let j = i + 1
+    let esc = false
+    while (j < text.length && (esc || text[j] !== '"')) {
+      esc = !esc && text[j] === '\\'
+      j += 1
+    }
+    if (j >= text.length) break // truncated mid-string — drop the fragment
+    out.push(decodeJsonString(text.slice(i + 1, j)))
+    i = j + 1
   }
   return out
 }
 
 const salvageString = (text: string, field: string): string => {
   const m = text.match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`))
-  return m ? m[1].trim() : ''
+  return m ? decodeJsonString(m[1]).trim() : ''
 }
 
 // --- planner ---------------------------------------------------------------

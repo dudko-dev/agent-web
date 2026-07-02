@@ -101,6 +101,23 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # `npm publish` (prepublishOnly) already built dist/, including the
+      # standalone browser bundle. Package the release assets:
+      #   - agent-web-<ver>.min.js(.map) — self-contained ESM bundle (core +
+      #     ai/zod/idb), ready for <script type="module"> or a direct download.
+      #   - the npm tarball — the full package for offline installs.
+      - name: Package release assets
+        if: steps.check.outputs.publish == 'true'
+        id: assets
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          mkdir -p release-assets
+          cp dist/agent-web.js "release-assets/agent-web-$VERSION.min.js"
+          cp dist/agent-web.js.map "release-assets/agent-web-$VERSION.min.js.map"
+          npm pack --pack-destination release-assets >/dev/null
+          ls -la release-assets
+
       - name: Create git tag and GitHub release
         if: steps.check.outputs.publish == 'true'
         env:
@@ -127,4 +144,5 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
-            --target "$(git rev-parse HEAD)"
+            --target "$(git rev-parse HEAD)" \
+            release-assets/*

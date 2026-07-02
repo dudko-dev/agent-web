@@ -37,6 +37,37 @@ npm install @browser-ai/web-llm @mlc-ai/web-llm
 npm install @modelcontextprotocol/sdk
 ```
 
+### CDN / standalone bundle (no build step)
+
+`dist/agent-web.js` is a **self-contained ESM bundle** of the core — `ai`,
+`zod` and `idb` are baked in. It ships in the npm package (so it's on every
+CDN) and is attached to each
+[GitHub release](https://github.com/dudko-dev/agent-web/releases) as
+`agent-web-<version>.min.js`:
+
+```html
+<script type="module">
+  import { createAgent, defineTool } from 'https://cdn.jsdelivr.net/npm/@dudko.dev/agent-web/dist/agent-web.js'
+  // or: https://unpkg.com/@dudko.dev/agent-web/dist/agent-web.js
+</script>
+```
+
+Bundler users can also opt into it via the `@dudko.dev/agent-web/bundle`
+subpath. Optional provider peers stay external even in the bundle; in a
+bundler-less page, map the ones you use with an import map (the runtime
+`import()` respects it) — direct `LanguageModel`s and `gateway` specs need no
+import map at all:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "@ai-sdk/openai": "https://cdn.jsdelivr.net/npm/@ai-sdk/openai/+esm"
+    }
+  }
+</script>
+```
+
 ## Quick start — cloud model, bring-your-own-key
 
 Keys are stored **encrypted at rest** (WebCrypto, IndexedDB) and referenced by
@@ -155,10 +186,11 @@ enters your core bundle.
 | `planner` / `synthesizer` | = `model` | per-stage model overrides (inherit base provider/creds if partial) |
 | `credentials` | — | a `CredentialStore` for `credentialRef` keys |
 | `tools` | `{}` | host tools (`defineTool`) |
+| `availableTools` / `excludedTools` | — | whitelist / blacklist of tool names mounted from `tools` |
 | `toolMode` | `'auto'` | `native` \| `prompted` \| `auto` (cloud→native, local→prompted) |
 | `systemPrompt` | — | prepended to every phase |
 | `describeState` | — | serialize world state into prompt context |
-| `memory` | — | `ContextStore` (`IndexedDBStore` / `MemoryStore`) |
+| `memory` | — | `ContextStore` (`IndexedDBStore` / `MemoryStore`); recent turns are read back into the planner prompt |
 | `maxIterations` / `maxStepsPerTask` / `maxRevisions` | 8 / 4 / 2 | loop caps |
 | `chatTimeoutMs` | 120000 | per-call watchdog |
 | `replan` / `synthesize` | `true` | toggle phases |
@@ -170,6 +202,8 @@ enters your core bundle.
 - [docs/providers.md](docs/providers.md) — every provider, CORS & direct-vs-proxy.
 - [docs/security.md](docs/security.md) — the token vault & its threat model.
 - [docs/tasks.md](docs/tasks.md) — status & roadmap.
+- [`@dudko.dev/agent`](https://www.npmjs.com/package/@dudko.dev/agent) — the
+  Node/server sibling (stdio MCP, persistence/resume, OpenTelemetry, CLI).
 
 ## License
 

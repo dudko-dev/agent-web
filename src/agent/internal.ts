@@ -1,6 +1,7 @@
 import type { LanguageModel } from 'ai'
 import type { BrowserAgentConfig, ResolvedConfig } from '../config.js'
 import type { AgentEvent } from '../events.js'
+import type { StoredMessage } from '../memory/store.js'
 import type { Prompts, ToolCallMode } from '../prompts.js'
 import { withSystem } from '../prompts.js'
 import type { AgentToolSet } from '../tools/types.js'
@@ -23,6 +24,8 @@ export interface AgentContext {
   signal?: AbortSignal
   /** Current world state for grounding, or undefined when no describeState is configured. */
   state: () => Promise<string | undefined>
+  /** Session transcript loaded from memory BEFORE this run's goal was appended. */
+  history?: StoredMessage[]
 }
 
 /** Prepend the host's systemPrompt to a phase system prompt. */

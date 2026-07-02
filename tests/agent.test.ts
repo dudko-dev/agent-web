@@ -1,22 +1,44 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod'
+import { simulateReadableStream } from 'ai'
 import { MockLanguageModelV3 } from 'ai/test'
-import { createAgent, defineTool } from '../dist/index.js'
+import { createAgent, defineTool, MemoryStore } from '../dist/index.js'
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 
-// A mock that routes its reply by which phase's system prompt it sees.
+const routeReply = (
+  replies: { planner: string; executor?: string; synthesizer: string },
+  options: { prompt: unknown },
+): string => {
+  const seen = JSON.stringify(options.prompt)
+  if (seen.includes('PLANNER')) return replies.planner
+  if (seen.includes('EXECUTOR')) return replies.executor ?? 'ok'
+  if (seen.includes('SYNTHESIZER')) return replies.synthesizer
+  return 'ok'
+}
+
+// A mock that routes its reply by which phase's system prompt it sees. The
+// synthesizer streams, so the mock implements doStream as well as doGenerate.
 const phaseRouter = (replies: { planner: string; executor?: string; synthesizer: string }) =>
   new MockLanguageModelV3({
-    doGenerate: async (options: { prompt: unknown }) => {
-      const seen = JSON.stringify(options.prompt)
-      let text = 'ok'
-      if (seen.includes('PLANNER')) text = replies.planner
-      else if (seen.includes('EXECUTOR')) text = replies.executor ?? 'ok'
-      else if (seen.includes('SYNTHESIZER')) text = replies.synthesizer
-      return { content: [{ type: 'text', text }], finishReason: 'stop', usage, warnings: [] }
-    },
+    doGenerate: async (options: { prompt: unknown }) => ({
+      content: [{ type: 'text', text: routeReply(replies, options) }],
+      finishReason: 'stop',
+      usage,
+      warnings: [],
+    }),
+    doStream: async (options: { prompt: unknown }) => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'text-start', id: 't1' },
+          { type: 'text-delta', id: 't1', delta: routeReply(replies, options) },
+          { type: 'text-end', id: 't1' },
+          { type: 'finish', finishReason: 'stop', usage },
+        ],
+      }),
+    }),
   })
 
 test('prompted loop: plan → execute a tool → synthesize', async () => {
@@ -45,7 +67,13 @@ test('prompted loop: plan → execute a tool → synthesize', async () => {
   })
 
   const types: string[] = []
-  const result = await agent.run('Add a title', { onEvent: (e) => types.push(e.type) })
+  let finalDeltas = ''
+  const result = await agent.run('Add a title', {
+    onEvent: (e) => {
+      types.push(e.type)
+      if (e.type === 'final.text-delta') finalDeltas += e.delta
+    },
+  })
 
   assert.equal(result.plan.steps.length, 1)
   assert.deepEqual(added, ['Title'])
@@ -53,6 +81,8 @@ test('prompted loop: plan → execute a tool → synthesize', async () => {
   assert.match(result.final, /title/i)
   assert.ok(types.includes('plan.created'))
   assert.ok(types.includes('step.tool-call'))
+  assert.ok(types.includes('final.text-delta'))
+  assert.equal(finalDeltas, 'I added a title block for you.')
   assert.ok(types.includes('final'))
 })
 
@@ -80,4 +110,69 @@ test('empty plan (greeting) answers directly and runs no tools', async () => {
   assert.equal(result.plan.steps.length, 0)
   assert.match(result.final, /Hi/)
   assert.equal(ranTool.called, false)
+})
+
+test('excludedTools: an excluded tool is unmounted and cannot be dispatched', async () => {
+  const ran = { safe: false, danger: false }
+  const model = phaseRouter({
+    planner: JSON.stringify({ reply: 'ok', plan: ['Do the thing'] }),
+    executor: JSON.stringify({
+      reply: 'done',
+      actions: [
+        { tool: 'safe', args: {} },
+        { tool: 'danger', args: {} },
+      ],
+    }),
+    synthesizer: 'Done.',
+  })
+  const mkTool = (key: 'safe' | 'danger') =>
+    defineTool({
+      description: key,
+      inputSchema: z.object({}),
+      execute: async () => {
+        ran[key] = true
+        return null
+      },
+    })
+  const agent = await createAgent({
+    model,
+    toolMode: 'prompted',
+    tools: { safe: mkTool('safe'), danger: mkTool('danger') },
+    excludedTools: ['danger'],
+  })
+  const result = await agent.run('Do the thing')
+  assert.equal(ran.safe, true)
+  assert.equal(ran.danger, false)
+  assert.equal(result.applied, 1)
+  const calls = result.trace[0].toolCalls
+  assert.equal(calls.find((c) => c.name === 'danger')?.ok, false)
+})
+
+test('memory: prior session turns are read back into the planner prompt', async () => {
+  const plannerPrompts: string[] = []
+  const model = new MockLanguageModelV3({
+    doGenerate: async (options: { prompt: unknown }) => {
+      const seen = JSON.stringify(options.prompt)
+      if (seen.includes('PLANNER')) plannerPrompts.push(seen)
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ reply: 'Hi!', plan: [] }) }],
+        finishReason: 'stop',
+        usage,
+        warnings: [],
+      }
+    },
+  })
+  const memory = new MemoryStore()
+  await memory.append('s1', { role: 'user', content: 'add a blue title' })
+  await memory.append('s1', { role: 'assistant', content: 'Added a blue title.' })
+
+  const agent = await createAgent({ model, toolMode: 'prompted', memory, sessionId: 's1' })
+  await agent.run('make it bigger')
+
+  assert.equal(plannerPrompts.length, 1)
+  assert.match(plannerPrompts[0], /CONVERSATION SO FAR/)
+  assert.match(plannerPrompts[0], /add a blue title/)
+  // The transcript now also holds the new turn.
+  const after = await memory.load('s1')
+  assert.equal(after.length, 4)
 })

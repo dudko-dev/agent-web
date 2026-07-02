@@ -7,6 +7,9 @@ export interface CompressOptions {
   maxChars?: number
   /** How many most-recent messages to keep verbatim. */
   keepRecent?: number
+  /** Time-box the summarisation call so it can never hang the caller. */
+  timeoutMs?: number
+  abortSignal?: AbortSignal
 }
 
 const totalChars = (msgs: StoredMessage[]): number => msgs.reduce((n, m) => n + m.content.length, 0)
@@ -39,6 +42,8 @@ export const compressHistory = async (
         'Summarize the following conversation into a compact set of durable facts and decisions. Output plain text only.',
       prompt: transcript,
       maxOutputTokens: 400,
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
     })
     const clean = (result.text || '').trim()
     if (!clean) return messages

@@ -25,7 +25,10 @@ export interface ToolLoopOptions {
   messages?: ModelMessage[]
   /** In native mode: the callable tools. In prompted mode: used to dispatch salvaged calls. */
   tools: ToolSet
-  /** Native mode: restrict callable tools to these names (plan-narrowed). */
+  /**
+   * Restrict callable tools to these names (plan-narrowed). Native mode passes
+   * them to the SDK's `activeTools`; prompted mode bounds `dispatch` to them.
+   */
   activeTools?: string[]
   /** Native mode: cap on internal tool-calling steps (default 4). */
   maxSteps?: number
@@ -128,13 +131,19 @@ const runPrompted = async (
     temperature: opts.temperature,
     abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
   })
-  if (result.text) opts.callbacks?.onTextDelta?.(result.text)
 
   const parsed = parseExecutorResponse(result.text)
+  // Surface the parsed human reply, never the raw JSON envelope.
+  if (parsed.reply) opts.callbacks?.onTextDelta?.(parsed.reply)
+
+  const active = opts.activeTools
+  const tools = active
+    ? Object.fromEntries(Object.entries(opts.tools).filter(([name]) => active.includes(name)))
+    : opts.tools
   const toolCalls: IToolCall[] = []
   for (const action of parsed.actions) {
     opts.callbacks?.onToolCall?.(action.tool, action.args)
-    const rec = await dispatch(action, opts.tools, { abortSignal: opts.abortSignal })
+    const rec = await dispatch(action, tools, { abortSignal: opts.abortSignal })
     toolCalls.push(rec)
     opts.callbacks?.onToolResult?.(rec.name, rec.output, rec.ok)
   }

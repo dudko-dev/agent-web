@@ -1,6 +1,7 @@
 import { generate, generateStructured } from '../llm/generate.js'
 import { normalizeUsage } from '../llm/util.js'
 import { parseReplannerResponse, type ReplanDecision } from '../parse.js'
+import type { ToolCallMode } from '../prompts.js'
 import type { IUsage } from './loop-types.js'
 import { emptyUsage } from './loop-types.js'
 import { systemFor, type AgentContext } from './internal.js'
@@ -27,27 +28,36 @@ export const decideReplan = async (
   remaining: string[],
 ): Promise<ReplanOutcome> => {
   const state = await ctx.state()
-  const parts = ctx.prompts.replanner({ goal, state, done, remaining, mode: ctx.plannerMode })
-  const common = {
-    system: systemFor(ctx, parts.system),
-    prompt: parts.prompt,
-    maxOutputTokens: ctx.config.budgets.replanner,
-    temperature: ctx.config.temperature,
-    abortSignal: ctx.signal,
-    timeoutMs: ctx.config.chatTimeoutMs,
+  const commonFor = (mode: ToolCallMode) => {
+    const parts = ctx.prompts.replanner({ goal, state, done, remaining, mode })
+    return {
+      system: systemFor(ctx, parts.system),
+      prompt: parts.prompt,
+      maxOutputTokens: ctx.config.budgets.replanner,
+      temperature: ctx.config.temperature,
+      abortSignal: ctx.signal,
+      timeoutMs: ctx.config.chatTimeoutMs,
+    }
   }
 
-  try {
-    if (ctx.plannerMode === 'native') {
-      const result = await generateStructured(ctx.plannerModel, ReplanSchema, common)
+  if (ctx.plannerMode === 'native') {
+    try {
+      const result = await generateStructured(ctx.plannerModel, ReplanSchema, commonFor('native'))
       return {
         decision: result.object.decision,
         reason: result.object.reason,
         plan: result.object.plan ?? [],
         usage: normalizeUsage(result.usage),
       }
+    } catch {
+      /* fall through to the prompted salvage below */
     }
-    const result = await generate(ctx.plannerModel, common)
+  }
+
+  try {
+    // The prompted path — also the fallback after a native failure, re-rendered
+    // with explicit JSON-shape instructions.
+    const result = await generate(ctx.plannerModel, commonFor('prompted'))
     const parsed = parseReplannerResponse(result.text)
     return {
       decision: parsed.decision,
