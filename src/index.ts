@@ -6,7 +6,7 @@ export { PlanSchema, PlanStepSchema, ReplanSchema } from './agent/schemas.js'
 export type { PlanShape, ReplanShape } from './agent/schemas.js'
 // Phase functions + helpers, for hosts building a custom loop.
 export { createPlan } from './agent/planner.js'
-export { executeStep, shouldReplan, splitBlocker } from './agent/executor.js'
+export { executeStep, replanWanted, shouldReplan, splitBlocker } from './agent/executor.js'
 export { decideReplan } from './agent/replanner.js'
 export { synthesizeAnswer } from './agent/synthesizer.js'
 export type { AgentContext } from './agent/internal.js'
@@ -17,6 +17,7 @@ export type {
   BrowserAgentConfig,
   ResolvedConfig,
   PhaseBudgets,
+  ReplanTrigger,
   ToolMode,
   ToolSelectionStrategy,
 } from './config.js'

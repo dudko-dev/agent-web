@@ -1,9 +1,9 @@
+import type { ReplanTrigger } from '../config.js'
 import { runToolLoop } from '../llm/tool-loop.js'
+import { timeoutSignal } from '../llm/util.js'
 import { renderCatalog } from '../tools/prompted.js'
-import type { IPlanStep, IStepResult, IUsage } from './loop-types.js'
+import { BLOCKER, type IPlanStep, type IStepResult, type IUsage } from './loop-types.js'
 import { systemFor, type AgentContext } from './internal.js'
-
-const BLOCKER = '[BLOCKER]'
 
 /**
  * Split the executor's reply into a clean summary and a structural `blocked`
@@ -97,6 +97,61 @@ export const executeStep = async (
   }
 }
 
-/** The replanner runs when a step was blocked or any of its tool calls failed. */
-export const shouldReplan = (result: IStepResult): boolean =>
-  result.blocked || result.toolCalls.some((c) => !c.ok)
+/**
+ * The replanner runs when a step was blocked or a tool call failed and stayed
+ * failed. A failure that a LATER call to the same tool retried successfully is
+ * resolved — the prompted feedback loop (and native multi-step) let the model
+ * self-correct within the step, so it must not force a replan.
+ */
+export const shouldReplan = (result: IStepResult): boolean => {
+  if (result.blocked) return true
+  const { toolCalls } = result
+  return toolCalls.some(
+    (c, i) => !c.ok && !toolCalls.slice(i + 1).some((later) => later.ok && later.name === c.name),
+  )
+}
+
+/** Bound a host `replanAfter` predicate by the same watchdog/abort as a model call. */
+export interface ReplanWantedOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  /** Called with whatever a host predicate threw before falling back to 'failure'. */
+  onError?: (err: unknown) => void
+}
+
+/**
+ * Resolve the configured `replanAfter` trigger for one step result. 'failure'
+ * is the classic `shouldReplan`; 'always' consults the replanner after every
+ * step; a host predicate decides per result. A predicate that throws, rejects,
+ * or outlives the watchdog/abort falls back to 'failure' behaviour so a buggy
+ * or hung predicate can never stall the run (its throw is surfaced via onError).
+ */
+export const replanWanted = async (
+  trigger: ReplanTrigger,
+  result: IStepResult,
+  opts: ReplanWantedOptions = {},
+): Promise<boolean> => {
+  if (trigger === 'always') return true
+  if (typeof trigger !== 'function') return shouldReplan(result)
+
+  const fallback = (): boolean => shouldReplan(result)
+  // Never rejects: a sync throw or async rejection resolves to the fallback.
+  const decided = (async () => {
+    try {
+      return Boolean(await trigger(result))
+    } catch (err) {
+      opts.onError?.(err)
+      return fallback()
+    }
+  })()
+
+  const guard = timeoutSignal(opts.signal, opts.timeoutMs)
+  if (!guard) return decided
+  return Promise.race([
+    decided,
+    new Promise<boolean>((resolve) => {
+      if (guard.aborted) resolve(fallback())
+      else guard.addEventListener('abort', () => resolve(fallback()), { once: true })
+    }),
+  ])
+}

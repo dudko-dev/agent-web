@@ -11,6 +11,8 @@
  * Override any builder via `BrowserAgentConfig.prompts`.
  */
 
+import { clip } from './llm/util.js'
+
 export type ToolCallMode = 'native' | 'prompted'
 
 export interface PromptParts {
@@ -61,8 +63,6 @@ const numbered = (items: string[], empty: string): string =>
 
 const stateBlock = (state?: string): string => (state && state.trim() ? `\n\nSTATE:\n${state}` : '')
 
-const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
-
 // The last few session messages, capped so a long transcript can't crowd out
 // the goal (memory compression keeps the full story in a summary message).
 const historyBlock = (history?: { role: string; content: string }[]): string => {
@@ -102,11 +102,12 @@ Reply with a single JSON object, nothing else:
 - "actions" are the tool calls for THIS step ([] if none are needed). Use ONLY tools from the TOOLS list; "args" must match the tool's parameters.
 - Build on the current STATE — do not repeat work that is already there.
 - "reply" is one short human sentence (no JSON) describing what you did.
+- After your actions run you will see their TOOL RESULTS and may continue the same step; finish with "actions": [] once it is done.
 - If you CANNOT complete the step, set "actions": [] and put the token [BLOCKER] in "reply" with a short reason.`
 
 // --- replanner -------------------------------------------------------------
 
-const REPLANNER_NATIVE = `You are the REPLANNER. After a step that was blocked or had a failed tool call, decide whether to keep going, revise the remaining steps, or finish.
+const REPLANNER_NATIVE = `You are the REPLANNER. After an executed step, decide whether to keep going, revise the remaining steps, or finish.
 "continue": the remaining steps still fit. "revise": provide a better "plan" for the REMAINING work (never repeat done work). "finish": the goal is already met.
 Judge from the current STATE vs the goal. Prefer "continue".`
 

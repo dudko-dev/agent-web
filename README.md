@@ -165,7 +165,9 @@ const { object } = await generateStructured(
   { prompt: 'Suggest a title and tags for this article: …' },
 )
 
-// One round of tool-calling (native or prompted), normalized result:
+// Tool-calling with feedback (native or prompted), normalized result. In both
+// modes the model sees its tool results and can keep going, up to `maxSteps`
+// rounds (default 4; prompted models get the results as a TOOL RESULTS turn):
 const { text: reply, toolCalls } = await runToolLoop(model, {
   mode: 'native',
   prompt: 'Add a title',
@@ -205,6 +207,7 @@ enters your core bundle.
 | `maxIterations` / `maxStepsPerTask` / `maxRevisions` | 8 / 4 / 2 | loop caps |
 | `chatTimeoutMs` | 120000 | per-call watchdog |
 | `replan` / `synthesize` | `true` | toggle phases |
+| `replanAfter` | `'failure'` | replan trigger: `'failure'` \| `'always'` \| `(stepResult) => boolean \| Promise<boolean>` |
 | `compressAfterChars` | 12000 | summarize old history past this size |
 
 ## Docs

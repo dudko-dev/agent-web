@@ -1,6 +1,10 @@
 import type { ModelMessage } from 'ai'
 import type { IUsage } from '../agent/loop-types.js'
 
+/** Truncate to `max` characters, ellipsising the overflow. */
+export const clip = (s: string, max: number): string =>
+  s.length > max ? `${s.slice(0, max - 1)}…` : s
+
 /**
  * The AI SDK prompt is `{ prompt } XOR { messages }` — passing both keys (even
  * with one undefined) breaks the discriminated union. Pick exactly one.

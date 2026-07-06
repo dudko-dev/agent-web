@@ -148,6 +148,50 @@ test('excludedTools: an excluded tool is unmounted and cannot be dispatched', as
   assert.equal(calls.find((c) => c.name === 'danger')?.ok, false)
 })
 
+test("replanAfter 'always': the replanner runs after a successful step and can finish early", async () => {
+  // The default trigger would never consult the replanner here — no step is
+  // blocked and no tool call fails. With 'always' it runs after step 1 and its
+  // 'finish' verdict must cut the remaining plan.
+  const model = new MockLanguageModelV3({
+    doGenerate: async (options: { prompt: unknown }) => {
+      const seen = JSON.stringify(options.prompt)
+      // NB: check REPLANNER before PLANNER — the latter is a substring.
+      const text = seen.includes('REPLANNER')
+        ? JSON.stringify({ decision: 'finish', reason: 'goal already met' })
+        : seen.includes('PLANNER')
+          ? JSON.stringify({ reply: 'ok', plan: ['do part one', 'do part two'] })
+          : JSON.stringify({ reply: 'part done', actions: [] })
+      return {
+        content: [{ type: 'text', text }],
+        finishReason: 'stop',
+        usage,
+        warnings: [],
+      }
+    },
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'text-start', id: 't1' },
+          { type: 'text-delta', id: 't1', delta: 'Done.' },
+          { type: 'text-end', id: 't1' },
+          { type: 'finish', finishReason: 'stop', usage },
+        ],
+      }),
+    }),
+  })
+  const decisions: string[] = []
+  const agent = await createAgent({ model, toolMode: 'prompted', replanAfter: 'always' })
+  const result = await agent.run('do both parts', {
+    onEvent: (e) => {
+      if (e.type === 'replan.decision') decisions.push(e.mode)
+    },
+  })
+  assert.deepEqual(decisions, ['finish'])
+  assert.equal(result.trace.length, 1)
+  assert.equal(result.plan.steps.length, 2)
+})
+
 test('memory: prior session turns are read back into the planner prompt', async () => {
   const plannerPrompts: string[] = []
   const model = new MockLanguageModelV3({

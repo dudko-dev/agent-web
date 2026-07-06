@@ -6,10 +6,10 @@ import {
   type ModelMessage,
   type ToolSet,
 } from 'ai'
-import type { IToolCall, IUsage } from '../agent/loop-types.js'
+import { addUsage, BLOCKER, emptyUsage, type IToolCall, type IUsage } from '../agent/loop-types.js'
 import { parseExecutorResponse } from '../parse.js'
 import { dispatch } from '../tools/prompted.js'
-import { normalizeUsage, promptOf, timeoutSignal } from './util.js'
+import { clip, normalizeUsage, promptOf, timeoutSignal } from './util.js'
 
 export interface ToolLoopCallbacks {
   onTextDelta?: (delta: string) => void
@@ -30,7 +30,7 @@ export interface ToolLoopOptions {
    * them to the SDK's `activeTools`; prompted mode bounds `dispatch` to them.
    */
   activeTools?: string[]
-  /** Native mode: cap on internal tool-calling steps (default 4). */
+  /** Cap on tool-calling rounds within this call, in both modes (default 4). */
   maxSteps?: number
   maxOutputTokens?: number
   temperature?: number
@@ -46,11 +46,12 @@ export interface ToolLoopResult {
 }
 
 /**
- * Run one round of tool-calling in whichever mode the model needs, returning a
- * normalised result. Native mode streams the SDK's multi-step function-calling;
- * prompted mode does a single generation, salvages a `{ reply, actions }` JSON
- * from the text, and dispatches each action through the tool's own execute.
- * Both call the exact same tool implementations.
+ * Run tool-calling in whichever mode the model needs, returning a normalised
+ * result. Native mode streams the SDK's multi-step function-calling; prompted
+ * mode salvages `{ reply, actions }` JSON out of plain text, dispatches each
+ * action through the tool's own execute, then feeds the TOOL RESULTS back and
+ * lets the model continue the same task — up to `maxSteps` rounds in both
+ * modes. Both modes call the exact same tool implementations.
  */
 export const runToolLoop = (
   model: LanguageModel,
@@ -116,6 +117,30 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
   return { text: text.trim(), toolCalls, usage: normalizeUsage(usage) }
 }
 
+/** JSON one-liner for a tool input/output; never throws (circular → String). */
+const asJson = (value: unknown): string => {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/** One round's results + the continue-or-finish contract for the next round. */
+const toolResultsPrompt = (results: IToolCall[]): string => {
+  const lines = results.map(
+    (r) =>
+      `- ${r.name} ${clip(asJson(r.input), 160)} → ${r.ok ? 'ok' : 'FAILED'}: ${clip(asJson(r.output), 400)}`,
+  )
+  return `TOOL RESULTS:
+${lines.join('\n')}
+
+Continue THIS step using the results above. Reply with a single JSON object, nothing else:
+{ "reply": string, "actions": [ { "tool": string, "args": object } ] }
+- If the step is now complete: "actions": [] and a short outcome in "reply".
+- Otherwise emit ONLY the remaining or corrective calls — never repeat a successful call.`
+}
+
 const runPrompted = async (
   model: LanguageModel,
   opts: ToolLoopOptions,
@@ -123,29 +148,85 @@ const runPrompted = async (
   // Prompted mode does NOT pass tools to the SDK — the tool catalogue is
   // already rendered into the prompt (see tools/prompted.ts renderCatalog); the
   // model replies with JSON, which we salvage and dispatch ourselves.
-  const result = await generateText({
-    model,
-    system: opts.system,
-    ...promptOf(opts),
-    maxOutputTokens: opts.maxOutputTokens,
-    temperature: opts.temperature,
-    abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
-  })
-
-  const parsed = parseExecutorResponse(result.text)
-  // Surface the parsed human reply, never the raw JSON envelope.
-  if (parsed.reply) opts.callbacks?.onTextDelta?.(parsed.reply)
-
+  //
+  // After a round's actions run, the model is shown their TOOL RESULTS and may
+  // continue the same task (react to a read-tool's output, fix a failed call)
+  // until it returns no actions, signals [BLOCKER], re-emits a batch it already
+  // ran, or `maxSteps` rounds are spent. Without this feedback a prompted model
+  // never learns what its calls returned — a read-tool would be write-only. Set
+  // maxSteps: 1 for the old single-round behaviour.
+  const maxRounds = Math.max(1, opts.maxSteps ?? 4)
   const active = opts.activeTools
   const tools = active
     ? Object.fromEntries(Object.entries(opts.tools).filter(([name]) => active.includes(name)))
     : opts.tools
+
+  // One watchdog for the WHOLE call (as native mode does with its single
+  // stream), so a slow local model can't run up to maxRounds × timeoutMs; every
+  // round's generation and every dispatch share this one deadline.
+  const signal = timeoutSignal(opts.abortSignal, opts.timeoutMs)
+
+  // The conversation grows across rounds: the model's own raw reply, then a
+  // user message with the results — the standard chat shape every model knows.
+  const messages: ModelMessage[] = opts.messages
+    ? [...opts.messages]
+    : [{ role: 'user', content: opts.prompt ?? '' }]
   const toolCalls: IToolCall[] = []
-  for (const action of parsed.actions) {
-    opts.callbacks?.onToolCall?.(action.tool, action.args)
-    const rec = await dispatch(action, tools, { abortSignal: opts.abortSignal })
-    toolCalls.push(rec)
-    opts.callbacks?.onToolResult?.(rec.name, rec.output, rec.ok)
+  // Every batch this loop has dispatched, so an exact repeat is caught even
+  // when it isn't consecutive (A→B→A oscillation, not just A→A stutter).
+  const seen = new Set<string>()
+  let usage = emptyUsage()
+  let text = ''
+
+  for (let round = 1; round <= maxRounds; round += 1) {
+    if (signal?.aborted) break
+    const result = await generateText({
+      model,
+      system: opts.system,
+      messages,
+      maxOutputTokens: opts.maxOutputTokens,
+      temperature: opts.temperature,
+      abortSignal: signal,
+    })
+    usage = addUsage(usage, normalizeUsage(result.usage))
+
+    const parsed = parseExecutorResponse(result.text)
+    // The LAST round's reply wins — an empty final reply is left empty (the
+    // executor's summaryOf fills it in) rather than surfacing a stale, often
+    // future-tense reply from an earlier round. Never the raw JSON envelope.
+    text = parsed.reply
+
+    // [BLOCKER] in any round is authoritative: the model says it cannot finish,
+    // so preserve that reply (the executor detects the sentinel to drive the
+    // replanner) and stop WITHOUT dispatching this round's speculative actions.
+    if (parsed.reply.includes(BLOCKER)) break
+    if (parsed.actions.length === 0) break
+
+    // A batch this loop already ran is a stutter, not progress — re-running it
+    // would apply every side effect again.
+    const batch = asJson(parsed.actions)
+    if (seen.has(batch)) break
+    seen.add(batch)
+
+    const results: IToolCall[] = []
+    for (const action of parsed.actions) {
+      if (signal?.aborted) break // stop mid-batch the moment the caller aborts
+      opts.callbacks?.onToolCall?.(action.tool, action.args)
+      const rec = await dispatch(action, tools, { abortSignal: signal })
+      toolCalls.push(rec)
+      results.push(rec)
+      opts.callbacks?.onToolResult?.(rec.name, rec.output, rec.ok)
+    }
+
+    if (round === maxRounds || signal?.aborted) break
+    messages.push({ role: 'assistant', content: result.text })
+    messages.push({ role: 'user', content: toolResultsPrompt(results) })
   }
-  return { text: parsed.reply, toolCalls, usage: normalizeUsage(result.usage) }
+
+  // Prompted mode can't stream, so surface the final reply ONCE (not per round)
+  // — a consumer accumulating deltas (as native mode's fragments require) would
+  // otherwise concatenate every round's full reply.
+  if (text) opts.callbacks?.onTextDelta?.(text)
+
+  return { text, toolCalls, usage }
 }

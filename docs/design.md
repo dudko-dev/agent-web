@@ -98,7 +98,14 @@ to text. So the agent has two strategies over **one** tool shape (an AI SDK
 - **prompted** — render the tool catalogue into the prompt, let the model reply
   with text, and salvage `{ reply, actions }` JSON with `parse.ts`; each action
   is validated against the tool's own `inputSchema` and dispatched to the same
-  `execute`. Plan via `parsePlannerResponse`.
+  `execute`. Plan via `parsePlannerResponse`. After a round's actions run, the
+  model is shown their `TOOL RESULTS` as a follow-up user turn and may continue
+  the same task — so read-tools and failed calls are visible to it — until it
+  returns no actions, signals `[BLOCKER]`, re-emits a batch it already ran
+  (stutter guard, catches A→B→A oscillation too), or `maxSteps` rounds are spent
+  (default 4; `maxSteps: 1` restores single-round). All rounds share ONE
+  `chatTimeoutMs` watchdog, so a slow model can't stretch a step to
+  `maxSteps × chatTimeoutMs`.
 
 `selectToolMode` picks per model: `toolMode: 'auto'` (default) → cloud = native,
 local/on-device = prompted; override with `'native'` / `'prompted'`. Native
@@ -113,9 +120,12 @@ instead of throwing.
   friendly answer; no tools run.
 - **Grounded steps** — optional `describeState()` is re-read before each phase so
   the model always sees the real, mutated world.
-- **Replan** — runs only after a **blocked** step (`[BLOCKER]` sentinel) or a
-  **failed** tool call (structural, language-agnostic), bounded by
-  `maxIterations` / `maxRevisions`.
+- **Replan** — by default after a **blocked** step (`[BLOCKER]` sentinel) or an
+  **unresolved failed** tool call (a failure a later same-tool call retried is
+  not counted); `replanAfter` widens the trigger to `'always'` or a host
+  predicate on the step result (e.g. "issues found in my state") — the predicate
+  is bounded by the `chatTimeoutMs` watchdog and abort, falling back to the
+  failure rule if it throws or hangs. Bounded by `maxIterations` / `maxRevisions`.
 - **Watchdog + abort** — every model call is time-boxed (`chatTimeoutMs`, via
   `AbortSignal.timeout`); `RunOptions.signal` cancels between phases.
 - **Events** — `run.start · model.load · plan.* · step.* · replan.decision ·

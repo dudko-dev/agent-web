@@ -9,7 +9,7 @@ import { defaultPrompts, type Prompts } from '../prompts.js'
 import { selectToolMode } from '../tools/mode.js'
 import { renderCatalog } from '../tools/prompted.js'
 import type { AgentToolSet } from '../tools/types.js'
-import { executeStep, shouldReplan } from './executor.js'
+import { executeStep, replanWanted } from './executor.js'
 import type { AgentContext } from './internal.js'
 import {
   addUsage,
@@ -279,15 +279,23 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           `${step.description} — ${applied} applied${failed ? `, ${failed} failed` : ''}${stepResult.blocked ? ', blocked' : ''}`,
         )
 
-        // 2b) REPLAN (only after a blocked / failed step). Also runs when the
-        // FAILED step was the last one — 'revise' can then add remedial steps.
-        if (
+        // 2b) REPLAN — by default after a blocked / failed step; `replanAfter`
+        // can widen the trigger ('always', or a host predicate reacting to
+        // e.g. issues surfaced through describeState). Also runs when the
+        // triggering step was the last one — 'revise' can add remedial steps.
+        // A host predicate is watchdog- and abort-bounded; re-check abort after
+        // it (it may await slow state) before spending a replanner call.
+        const wantReplan =
           cfg.replan &&
           iter < cfg.maxIterations &&
           revisions < cfg.maxRevisions &&
           !isAborted() &&
-          shouldReplan(stepResult)
-        ) {
+          (await replanWanted(cfg.replanAfter, stepResult, {
+            signal: ctx.signal,
+            timeoutMs: cfg.chatTimeoutMs,
+            onError: (err) => log.warn('replanAfter predicate threw — using the failure rule', err),
+          }))
+        if (wantReplan && !isAborted()) {
           const decision = await decideReplan(
             ctx,
             text,

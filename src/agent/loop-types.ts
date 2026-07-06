@@ -35,6 +35,13 @@ export interface IStepResult {
   blocked: boolean
 }
 
+/**
+ * Sentinel the executor emits when it cannot complete a step. Language-agnostic
+ * and shared by the tool loop (which must preserve it across prompted rounds)
+ * and `splitBlocker` (which strips it and drives the replanner).
+ */
+export const BLOCKER = '[BLOCKER]'
+
 export const emptyUsage = (): IUsage => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0 })
 
 export const addUsage = (a: IUsage, b: IUsage): IUsage => ({

@@ -1,3 +1,4 @@
+import type { IStepResult } from './agent/loop-types.js'
 import type { ContextStore } from './memory/store.js'
 import type { AgentLoggerSink, LogLevel } from './logger.js'
 import type { ModelInput, StageInput } from './providers/types.js'
@@ -7,6 +8,17 @@ import type { AgentToolSet } from './tools/types.js'
 
 /** Force a tool-calling strategy, or let the agent pick per model ('auto'). */
 export type ToolMode = 'auto' | 'native' | 'prompted'
+
+/**
+ * When to consult the replanner after an executed step (given `replan` is on):
+ * 'failure' — after a blocked step or a failed tool call (default);
+ * 'always'  — after every step, so the replanner can react to problems the host
+ *             surfaces via `describeState` (one extra model call per step);
+ * predicate — decides per step result; closes over host state if needed, and
+ *             falls back to 'failure' behaviour if it throws.
+ */
+export type ReplanTrigger =
+  'failure' | 'always' | ((result: IStepResult) => boolean | Promise<boolean>)
 
 /**
  * 'all'           — the executor sees the full ToolSet on every step.
@@ -61,7 +73,7 @@ export interface BrowserAgentConfig {
 
   /** Hard cap on executed steps incl. replans (default 8). */
   maxIterations?: number
-  /** Cap on LLM steps inside a single native executor call (default 4). */
+  /** Cap on tool-calling rounds inside one executor call, both modes (default 4). */
   maxStepsPerTask?: number
   /** Cap on replanner "revise" decisions per run (default 2). */
   maxRevisions?: number
@@ -70,8 +82,10 @@ export interface BrowserAgentConfig {
   budgets?: PhaseBudgets
   temperature?: number
 
-  /** Replan after a blocked/failed step (default true). */
+  /** Master switch for the replan phase (default true). */
   replan?: boolean
+  /** What triggers the replanner when it is on (default 'failure'). */
+  replanAfter?: ReplanTrigger
   /** Write a final natural-language summary (default true). */
   synthesize?: boolean
   /** Compress stored history past this many chars (0 = off, default 12000). */
@@ -95,6 +109,7 @@ export interface ResolvedConfig {
   budgets: Required<PhaseBudgets>
   temperature: number | undefined
   replan: boolean
+  replanAfter: ReplanTrigger
   synthesize: boolean
   compressAfterChars: number
   logLevel: LogLevel
@@ -117,6 +132,7 @@ export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
   },
   temperature: c.temperature,
   replan: c.replan ?? true,
+  replanAfter: c.replanAfter ?? 'failure',
   synthesize: c.synthesize ?? true,
   compressAfterChars: c.compressAfterChars ?? 12_000,
   logLevel: c.logLevel ?? 'warn',
