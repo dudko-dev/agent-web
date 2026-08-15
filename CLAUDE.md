@@ -29,7 +29,8 @@ behind every decision.
 - **Optional peers, imported dynamically.** `@ai-sdk/*`, `@browser-ai/*`,
   `@modelcontextprotocol/sdk`, `@mlc-ai/web-llm` — external in the bundle so
   hosts install and code-split only what they use. `ai`, `zod`, `idb` are deps.
-- Pinned to **AI SDK v6** because `@browser-ai/web-llm` peers `ai@^6`.
+- Tracks **AI SDK v7**, in step with `@browser-ai/*` v3 which peers `ai@^7`.
+  (This was pinned to v6 while `@browser-ai/web-llm` still peered `ai@^6`.)
 
 ## Layout
 
