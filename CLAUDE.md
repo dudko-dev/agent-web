@@ -44,7 +44,8 @@ behind every decision.
 - `src/agent/` — `schemas`, `planner`/`executor`/`replanner`/`synthesizer`,
   `runner` (createAgent), `loop-types`.
 - `src/memory/` — `store`, `sessions` (IndexedDBStore), `compress`.
-- `src/mcp/` — optional HTTP connector (`./mcp` subpath).
+- `src/mcp/` — optional HTTP connector (`./mcp` subpath): `http` (transport,
+  mount, refresh) + `oauth` (OAuth 2.1 / DCR provider, vault-backed tokens).
 - `src/{parse,prompts,events,config,index}.ts`.
 - `tests/` — `node --test` with `--experimental-strip-types` (Node ≥ 22.6);
   tests import from `dist` (pretest builds).

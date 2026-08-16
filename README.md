@@ -191,6 +191,55 @@ Browsers can only speak the **HTTP (StreamableHTTP)** transport — stdio MCP is
 Node-only. The connector lives in the `./mcp` subpath so the MCP SDK never
 enters your core bundle.
 
+`connectMcpHttp` returns `{ tools, catalog, results, refreshServer, close }`.
+`tools` and `catalog` are mutated **in place** by `refreshServer(name)`, so an
+agent built from them picks up a server's new tool list (react to it via the
+`onToolsChanged` option) without being rebuilt. Filtering is plain object work:
+delete the keys you don't want before merging.
+
+### OAuth 2.1 + Dynamic Client Registration
+
+A server behind OAuth needs more than a header: access tokens expire mid-run.
+Pass an `authProvider` and the MCP SDK discovers the authorization server
+(RFC 9728), registers this app dynamically (RFC 7591 — no client_id to
+pre-provision), runs PKCE, and **refreshes the access token on any 401 and
+retries the request**.
+
+```ts
+import { BrowserOAuthProvider, connectMcpHttp, finishMcpOAuth, readOAuthCallback }
+  from '@dudko.dev/agent-web/mcp'
+
+const provider = new BrowserOAuthProvider({
+  serverUrl: 'https://my-mcp-server.example/mcp',
+  redirectUrl: `${location.origin}/callback`, // must match on the way back
+})
+
+// 1. On the callback page: finish the flow before anything else.
+const callback = readOAuthCallback()
+if (callback) await finishMcpOAuth(provider, callback)
+
+// 2. Connect. `needsAuthorization` means "send the user to authorize".
+const mcp = await connectMcpHttp({ docs: { url: provider.serverUrl, authProvider: provider } })
+if (mcp.results[0]?.needsAuthorization) {
+  location.href = String(provider.authorizationUrl) // a button, a popup — your call
+}
+```
+
+Tokens, the dynamic registration and the PKCE verifier are stored in the same
+**encrypted IndexedDB vault** as provider API keys (`VaultOAuthStorage`; swap in
+`MemoryOAuthStorage` or your own via `storage`). `redirectToAuthorization` never
+navigates on its own — the SDK can demand authorization from inside a running
+tool call, and evicting the user then would discard the run. The URL is recorded
+on `provider.authorizationUrl` and the app decides when to use it.
+
+Two things to check on the **server** side, both invisible until they bite:
+
+- CORS must allow `Authorization` and expose `WWW-Authenticate` and
+  `mcp-session-id` (`Access-Control-Expose-Headers`). Without the first, the
+  browser cannot read the 401 challenge and discovery never starts.
+- The authorization server's `/register`, metadata and token endpoints must be
+  CORS-enabled too — a browser client calls them directly.
+
 ## Configuration (highlights)
 
 | Option | Default | Purpose |
