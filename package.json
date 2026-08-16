@@ -139,7 +139,7 @@
     "@browser-ai/core": "^2.0.0",
     "@browser-ai/web-llm": "^2.0.0",
     "@mlc-ai/web-llm": ">=0.2.70",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "peerDependenciesMeta": {
     "@ai-sdk/openai": {

@@ -78,7 +78,9 @@ src/
 │   ├── runner.ts        createAgent() — orchestration + events
 │   └── loop-types.ts    IPlan / IStepResult / IUsage
 ├── memory/              store.ts, sessions.ts (IndexedDBStore), compress.ts
-├── mcp/http.ts          OPTIONAL HTTP MCP connector (./mcp subpath)
+├── mcp/                 OPTIONAL HTTP MCP connector (./mcp subpath)
+│   ├── http.ts          StreamableHTTP connect / mount / refresh
+│   └── oauth.ts         OAuth 2.1 + DCR client provider (vault-backed)
 ├── parse.ts             robust JSON-salvage parsers (the prompted backbone)
 ├── prompts.ts           default phase prompts (native + prompted variants)
 ├── events.ts            AgentEvent union

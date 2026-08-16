@@ -64,7 +64,10 @@ Status of the work. See [design.md](./design.md) for the architecture,
 - [ ] **Model-load events** — wire WebLLM download progress to `model.load`
       automatically (today: pass `initProgressCallback` via `providerOptions`).
 - [ ] **AI SDK v7** — bump once `@browser-ai/web-llm` supports the v7 provider spec.
-- [ ] **MCP niceties** — `tools/list_changed` refresh; per-tool allow/deny filter.
+- [x] **MCP OAuth** — `authProvider` + `BrowserOAuthProvider`: DCR (RFC 7591),
+      PKCE, vault-stored tokens, refresh on 401, proactive refresh on connect.
+- [x] **MCP niceties** — `tools/list_changed` notification + `refreshServer()`.
+      (Allow/deny filtering stays a host concern: `tools` is a plain object.)
 - [ ] **Examples** — a vanilla-JS demo and a React demo (cloud BYOK + local WebLLM).
 - [ ] **OPFS/Blob tool outputs** — optional spill target for binary MCP results.
 
