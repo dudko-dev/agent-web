@@ -103,11 +103,33 @@ interface StoredTokens {
 
 const DEFAULT_SKEW_SECONDS = 30
 
-// Namespacing by origin+pathname keeps two MCP servers on the same host (e.g.
-// /mcp/docs and /mcp/crm) from sharing a registration or a token.
+// Namespacing by origin+path+query keeps two MCP servers on the same host
+// (/mcp/docs vs /mcp/crm, or ?tenant=a vs ?tenant=b) from sharing a
+// registration or a token — one tenant's bearer must never be sent to another.
 const namespaceFor = (serverUrl: string): string => {
   const u = new URL(serverUrl)
-  return `mcp-oauth:${u.origin}${u.pathname.replace(/\/+$/, '')}`
+  return `mcp-oauth:${u.origin}${u.pathname.replace(/\/+$/, '')}${u.search}`
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+/**
+ * OAuth over plaintext hands the bearer token to anyone on the path, so only
+ * https — or a loopback host, where there is no network to sniff — is allowed.
+ * Parsed rather than pattern-matched: `http://localhost.attacker.example/` is a
+ * registrable host that a prefix match would wave through.
+ */
+export const assertSecureOAuthUrl = (url: string, label = 'MCP server'): void => {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(`${label}: "${url}" is not a valid URL`)
+  }
+  if (parsed.protocol === 'https:' || LOOPBACK_HOSTS.has(parsed.hostname)) return
+  throw new Error(
+    `${label}: MCP OAuth requires https (or a loopback host) - refusing to send tokens to "${url}"`,
+  )
 }
 
 const randomToken = (): string => {
@@ -134,6 +156,7 @@ export class BrowserOAuthProvider implements OAuthClientProvider {
   private readonly onRedirect?: (url: URL) => void | Promise<void>
 
   constructor(opts: BrowserOAuthProviderOptions) {
+    assertSecureOAuthUrl(opts.serverUrl)
     this.serverUrl = opts.serverUrl
     this.storage = opts.storage ?? new VaultOAuthStorage()
     this.ns = namespaceFor(opts.serverUrl)
@@ -166,14 +189,17 @@ export class BrowserOAuthProvider implements OAuthClientProvider {
   }
 
   private async readJSON<T>(suffix: string): Promise<T | undefined> {
-    const raw = await this.storage.get(this.key(suffix))
-    if (raw === undefined) return undefined
+    // The read itself is inside the guard on purpose: the default storage
+    // decrypts, and an AES-GCM blob written under a key that no longer exists
+    // (a partially cleared IndexedDB, a rotated vault key) throws. Treating
+    // that as "no value" lets the flow re-authorize instead of every call
+    // rejecting with an opaque OperationError forever.
     try {
+      const raw = await this.storage.get(this.key(suffix))
+      if (raw === undefined) return undefined
       return JSON.parse(raw) as T
     } catch {
-      // Corrupt entry (partial write, storage tampering): drop it rather than
-      // wedging every later call on the same parse error.
-      await this.storage.delete(this.key(suffix))
+      await this.storage.delete(this.key(suffix)).catch(() => {})
       return undefined
     }
   }
@@ -240,11 +266,10 @@ export class BrowserOAuthProvider implements OAuthClientProvider {
    * `invalid_client` (the AS forgot our dynamic registration). Clearing lets
    * the SDK re-register and re-authorize without the user clearing site data.
    */
-  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier'): Promise<void> {
-    const targets =
-      scope === 'all'
-        ? ['tokens', 'client', 'verifier', 'state']
-        : [scope === 'client' ? 'client' : scope]
+  async invalidateCredentials(
+    scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery',
+  ): Promise<void> {
+    const targets = scope === 'all' ? ['tokens', 'client', 'verifier', 'state'] : [scope]
     await Promise.all(targets.map((t) => this.storage.delete(this.key(t))))
   }
 

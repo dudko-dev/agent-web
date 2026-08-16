@@ -1,12 +1,15 @@
+import 'fake-indexeddb/auto'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  beginMcpOAuth,
   BrowserOAuthProvider,
   connectMcpHttp,
   finishMcpOAuth,
   flattenContent,
   MemoryOAuthStorage,
   readOAuthCallback,
+  VaultOAuthStorage,
 } from '../dist/mcp.js'
 
 // ── A fake remote MCP server + authorization server, spoken over a mock fetch.
@@ -60,11 +63,14 @@ const createMockServer = (opts: MockOptions = {}) => {
     grants: [] as string[],
     issued: 1,
     lastCodeVerifier: undefined as string | undefined,
+    toolCalls: 0,
     lastRegistration: undefined as Record<string, unknown> | undefined,
     /** Set to answer the next token request with invalid_client. */
     rejectClient: false,
     /** Set to answer dynamic registration with invalid_client_metadata. */
     failRegistration: false,
+    /** Set to answer refresh_token grants with a transient 503. */
+    failRefresh: false,
   }
 
   const handleRpc = (msg: RpcMessage): unknown => {
@@ -92,6 +98,7 @@ const createMockServer = (opts: MockOptions = {}) => {
       return { jsonrpc: '2.0', id: msg.id, result: { tools } }
     }
     if (msg.method === 'tools/call') {
+      state.toolCalls += 1
       const params = (msg.params ?? {}) as { name?: string; arguments?: unknown }
       if (params.name === 'boom') {
         return {
@@ -104,7 +111,11 @@ const createMockServer = (opts: MockOptions = {}) => {
         jsonrpc: '2.0',
         id: msg.id,
         result: {
-          content: [{ type: 'text', text: `echo:${JSON.stringify(params.arguments ?? {})}` }],
+          // Echo the name the SERVER received, so a test asserting that a
+          // sanitized key still dispatches to the original name is real.
+          content: [
+            { type: 'text', text: `${params.name}:${JSON.stringify(params.arguments ?? {})}` },
+          ],
         },
       }
     }
@@ -183,6 +194,10 @@ const createMockServer = (opts: MockOptions = {}) => {
           return jsonResponse({ error: 'invalid_grant' }, 400)
         }
       } else if (grant === 'refresh_token') {
+        if (state.failRefresh) {
+          // A transient authorization-server outage, NOT a dead token.
+          return jsonResponse({ error: 'server_error' }, 503)
+        }
         if (!params.get('refresh_token')?.startsWith('refresh-')) {
           return jsonResponse({ error: 'invalid_grant' }, 400)
         }
@@ -310,7 +325,8 @@ test('connectMcpHttp: sanitized name collisions are suffixed, not dropped', asyn
   const mcp = await connectMcpHttp({ docs: { url: MCP_URL, fetch: mock.fetchFn } })
   assert.deepEqual(Object.keys(mcp.tools), ['docs__a_b', 'docs__a_b_2'])
   // Both keys still dispatch to their ORIGINAL server-side names.
-  assert.equal(await callTool(mcp.tools, 'docs__a_b_2', { x: 1 }), 'echo:{"x":1}')
+  assert.equal(await callTool(mcp.tools, 'docs__a_b', { x: 1 }), 'a.b:{"x":1}')
+  assert.equal(await callTool(mcp.tools, 'docs__a_b_2', { x: 1 }), 'a/b:{"x":1}')
   await mcp.close()
 })
 
@@ -368,6 +384,49 @@ test('connectMcpHttp: closes the client when listTools fails after connect', asy
   // The transport must have been torn down — otherwise the SSE stream leaks
   // for the lifetime of the tab.
   assert.ok(logs.some((m) => m.includes('transport closed')))
+})
+
+test('two server names that sanitize to the same prefix keep both tool sets', async () => {
+  // "docs.v1" and "docs/v1" both sanitize to "docs_v1__": a connector that
+  // purged by prefix would unmount the first server while still listing it in
+  // the catalogue, and route its name to the OTHER server's client.
+  const a = createMockServer()
+  const b = createMockServer()
+  const mcp = await connectMcpHttp({
+    'docs.v1': { url: MCP_URL, fetch: a.fetchFn },
+    'docs/v1': { url: MCP_URL, fetch: b.fetchFn },
+  })
+
+  assert.deepEqual(Object.keys(mcp.tools), ['docs_v1__echo', 'docs_v1__echo_2'])
+  assert.deepEqual(
+    mcp.catalog.map((c) => `${c.server}:${c.name}`),
+    ['docs.v1:docs_v1__echo', 'docs/v1:docs_v1__echo_2'],
+  )
+
+  await callTool(mcp.tools, 'docs_v1__echo', {})
+  assert.equal(a.state.toolCalls, 1, 'the first key reaches the first server')
+  assert.equal(b.state.toolCalls, 0)
+  await callTool(mcp.tools, 'docs_v1__echo_2', {})
+  assert.equal(b.state.toolCalls, 1, 'the suffixed key reaches the second server')
+  await mcp.close()
+})
+
+test('refreshServer: a nested server prefix is not swept away', async () => {
+  // "a__b" starts with "a__", so a prefix-based purge during a refresh of "a"
+  // would silently unmount every tool of the OTHER server.
+  const outer = createMockServer({ tools: [{ name: 'x', inputSchema: { type: 'object' } }] })
+  const inner = createMockServer({ tools: [{ name: 'y', inputSchema: { type: 'object' } }] })
+  const mcp = await connectMcpHttp({
+    a: { url: MCP_URL, fetch: outer.fetchFn },
+    a__b: { url: MCP_URL, fetch: inner.fetchFn },
+  })
+  assert.deepEqual(Object.keys(mcp.tools).sort(), ['a__b__y', 'a__x'])
+
+  await mcp.refreshServer('a')
+
+  assert.deepEqual(Object.keys(mcp.tools).sort(), ['a__b__y', 'a__x'])
+  assert.equal(mcp.catalog.length, 2)
+  await mcp.close()
 })
 
 test('refreshServer: re-lists a server and rewrites its entries in place', async () => {
@@ -436,6 +495,60 @@ test('BrowserOAuthProvider: state is single-use and mismatches fail', async () =
   assert.equal(await provider.verifyState(second), false)
 })
 
+test('BrowserOAuthProvider: refuses to carry tokens over plaintext http', () => {
+  const opts = { redirectUrl: REDIRECT_URL, storage: new MemoryOAuthStorage() }
+  assert.throws(
+    () => new BrowserOAuthProvider({ ...opts, serverUrl: 'http://mcp.example.test/mcp' }),
+    /requires https/,
+  )
+  // A registrable host that merely starts with "localhost" is not loopback.
+  assert.throws(
+    () => new BrowserOAuthProvider({ ...opts, serverUrl: 'http://localhost.attacker.test/mcp' }),
+    /requires https/,
+  )
+  assert.ok(new BrowserOAuthProvider({ ...opts, serverUrl: 'http://localhost:8080/mcp' }))
+  assert.ok(new BrowserOAuthProvider({ ...opts, serverUrl: 'http://127.0.0.1:8080/mcp' }))
+})
+
+test('BrowserOAuthProvider: two tenants on one URL path do not share credentials', async () => {
+  // Same origin and path, different query — a namespace that ignored the query
+  // would hand tenant B the bearer token minted for tenant A.
+  const storage = new MemoryOAuthStorage()
+  const a = new BrowserOAuthProvider({
+    serverUrl: `${MCP_URL}?tenant=a`,
+    redirectUrl: REDIRECT_URL,
+    storage,
+  })
+  const b = new BrowserOAuthProvider({
+    serverUrl: `${MCP_URL}?tenant=b`,
+    redirectUrl: REDIRECT_URL,
+    storage,
+  })
+
+  await a.saveTokens({ access_token: 'tenant-a', token_type: 'Bearer' })
+  assert.equal((await a.tokens())?.access_token, 'tenant-a')
+  assert.equal(await b.tokens(), undefined)
+})
+
+test('VaultOAuthStorage: round-trips through the encrypted IndexedDB vault', async () => {
+  const storage = new VaultOAuthStorage({ dbName: `oauth-test-${Date.now()}` })
+  const provider = new BrowserOAuthProvider({
+    serverUrl: MCP_URL,
+    redirectUrl: REDIRECT_URL,
+    storage,
+  })
+
+  await provider.saveTokens({ access_token: 'stored', token_type: 'Bearer', expires_in: 3600 })
+  await provider.saveClientInformation({ client_id: 'dcr-client-1' })
+
+  assert.equal((await provider.tokens())?.access_token, 'stored')
+  assert.equal((await provider.clientInformation())?.client_id, 'dcr-client-1')
+  assert.equal(await provider.isAccessTokenExpired(), false)
+
+  await provider.reset()
+  assert.equal(await provider.tokens(), undefined)
+})
+
 test('readOAuthCallback: reads query params, hash routes, and errors', () => {
   assert.deepEqual(readOAuthCallback('https://app.test/cb?code=abc&state=xyz'), {
     code: 'abc',
@@ -443,8 +556,12 @@ test('readOAuthCallback: reads query params, hash routes, and errors', () => {
     error: undefined,
     errorDescription: undefined,
   })
-  assert.deepEqual(readOAuthCallback('https://app.test/#/cb?code=abc&state=xyz')?.code, 'abc')
-  assert.equal(readOAuthCallback('https://app.test/')?.code, undefined)
+  assert.deepEqual(readOAuthCallback('https://app.test/#/cb?code=abc&state=xyz'), {
+    code: 'abc',
+    state: 'xyz',
+    error: undefined,
+    errorDescription: undefined,
+  })
   assert.equal(readOAuthCallback('https://app.test/'), undefined)
   const denied = readOAuthCallback('https://app.test/cb?error=access_denied&error_description=nope')
   assert.equal(denied?.error, 'access_denied')
@@ -650,6 +767,63 @@ test('OAuth: an already-expired token is refreshed BEFORE the first request', as
   )
   assert.equal(mock.state.grants.filter((g) => g === 'refresh_token').length, 1)
   await mcp.close()
+})
+
+test('OAuth: a transient refresh failure still leads to ONE usable authorization', async () => {
+  // The proactive refresh must never start an authorization of its own: the
+  // SDK's auth() silently escalates a failed refresh into a full redirect,
+  // issuing a state + PKCE verifier that the transport's own 401 handling
+  // would then overwrite — leaving the user holding a code the stored pair
+  // cannot verify ("state mismatch") on every attempt.
+  const mock = createMockServer({ requireAuth: true })
+  mock.state.failRefresh = true
+  const redirects: URL[] = []
+  const provider = new BrowserOAuthProvider({
+    serverUrl: MCP_URL,
+    redirectUrl: REDIRECT_URL,
+    storage: new MemoryOAuthStorage(),
+    onRedirect: (url) => {
+      redirects.push(url)
+    },
+  })
+  await provider.saveClientInformation({ client_id: 'dcr-client-1' })
+  await provider.saveTokens({
+    access_token: 'access-1',
+    token_type: 'Bearer',
+    expires_in: 5, // inside the skew window: the proactive refresh will fire
+    refresh_token: 'refresh-1',
+  })
+  mock.state.validTokens.clear()
+
+  const mcp = await connectMcpHttp({
+    docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn },
+  })
+  assert.equal(mcp.results[0].needsAuthorization, true)
+  assert.equal(redirects.length, 1, 'exactly one authorization was started')
+
+  // The state that reached the user is the state we can verify.
+  mock.state.failRefresh = false
+  const state = redirects[0].searchParams.get('state') ?? undefined
+  await finishMcpOAuth(provider, { code: 'auth-code-1', state }, { fetch: mock.fetchFn })
+  assert.ok((await provider.tokens())?.access_token)
+})
+
+test('OAuth: beginMcpOAuth reports REDIRECT and records where to send the user', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  const provider = makeProvider()
+  const outcome = await beginMcpOAuth(provider, { fetch: mock.fetchFn })
+  assert.equal(outcome, 'REDIRECT')
+  assert.equal(provider.authorizationUrl?.searchParams.get('client_id'), 'dcr-client-1')
+
+  await finishMcpOAuth(
+    provider,
+    {
+      code: 'auth-code-1',
+      state: provider.authorizationUrl?.searchParams.get('state') ?? undefined,
+    },
+    { fetch: mock.fetchFn },
+  )
+  assert.equal(await provider.isAuthorized(), true)
 })
 
 test('OAuth: a dead refresh token falls back to a fresh authorization', async () => {

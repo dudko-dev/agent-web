@@ -11,6 +11,7 @@ import {
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { dynamicTool, jsonSchema, type ToolSet } from 'ai'
+import { assertSecureOAuthUrl } from './oauth.js'
 
 /**
  * A remote MCP server reached over StreamableHTTP. Browsers can ONLY speak the
@@ -114,11 +115,13 @@ const sanitizeName = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_')
  * original on dispatch.
  */
 const uniqueKey = (base: string, taken: ToolSet): string => {
-  if (!taken[base]) return base
+  // hasOwn, not truthiness: a tool named so that the key lands on "__proto__"
+  // would otherwise read as already taken through the prototype chain.
+  if (!Object.hasOwn(taken, base)) return base
   for (let n = 2; n < 100; n++) {
     const suffix = `_${n}`
     const candidate = base.slice(0, MAX_TOOL_NAME_LEN - suffix.length) + suffix
-    if (!taken[candidate]) return candidate
+    if (!Object.hasOwn(taken, candidate)) return candidate
   }
   return ''
 }
@@ -152,27 +155,87 @@ interface ServerConnect {
   needsAuthorization?: boolean
 }
 
+/** Thrown by the refresh-only view when the SDK reaches for a redirect. */
+class RefreshOnlyAbort extends Error {}
+
+/**
+ * A view of the provider that can renew a token but can never start an
+ * interactive authorization.
+ *
+ * `auth()` does not have a refresh-only mode: when a refresh fails for a reason
+ * it deems recoverable (a 5xx from the token endpoint, a network blip) it falls
+ * through to a brand-new authorization — issuing a state and a PKCE verifier,
+ * overwriting the stored pair, and calling `redirectToAuthorization`. The
+ * transport then does its own `auth()` on the first 401, overwriting them
+ * again, so the user comes back holding a code the second pair can't verify.
+ * Blocking the three redirect-path methods aborts the escalation before
+ * anything is overwritten; the transport's 401 handling stays the single owner
+ * of interactive authorization.
+ */
+const refreshOnly = (p: OAuthClientProvider): OAuthClientProvider => ({
+  // Must stay truthy: `auth()` reads a missing redirectUrl as "non-interactive
+  // grant" and would try to fetch a token without one.
+  get redirectUrl() {
+    return p.redirectUrl
+  },
+  get clientMetadata() {
+    return p.clientMetadata
+  },
+  clientInformation: () => p.clientInformation(),
+  saveClientInformation: p.saveClientInformation?.bind(p),
+  tokens: () => p.tokens(),
+  saveTokens: (t) => p.saveTokens(t),
+  invalidateCredentials: p.invalidateCredentials?.bind(p),
+  addClientAuthentication: p.addClientAuthentication?.bind(p),
+  validateResourceURL: p.validateResourceURL?.bind(p),
+  codeVerifier: () => p.codeVerifier(),
+  state: () => {
+    throw new RefreshOnlyAbort()
+  },
+  saveCodeVerifier: () => {
+    throw new RefreshOnlyAbort()
+  },
+  redirectToAuthorization: () => {
+    throw new RefreshOnlyAbort()
+  },
+})
+
 /**
  * An access token that is already expired produces a guaranteed 401 on the
  * first request. When the provider tells us so AND we hold a refresh token,
  * renew before connecting: one round-trip saved, and a run that starts on a
  * stale token doesn't surface a spurious auth error to the model.
+ *
+ * Best-effort by design — anything that goes wrong here is left to the
+ * transport's own 401 handling, which is the path that knows how to ask the
+ * user for a new authorization.
  */
 const refreshIfExpired = async (
   provider: OAuthClientProvider,
   serverUrl: string,
-  fetchFn?: FetchLike,
+  fetchFn: FetchLike | undefined,
+  log: NonNullable<ConnectMcpOptions['onLog']>,
+  name: string,
 ): Promise<void> => {
   const check = (provider as { isAccessTokenExpired?: () => boolean | Promise<boolean> })
     .isAccessTokenExpired
   if (typeof check !== 'function') return
   if (!(await check.call(provider))) return
   const tokens = await provider.tokens()
-  // Without a refresh token `auth()` would escalate to a full authorization
-  // redirect. Leave that to the caller (via needsAuthorization) rather than
-  // triggering it from inside connect.
+  // Nothing to refresh with: let the 401 path ask for a new authorization.
   if (!tokens?.refresh_token) return
-  await auth(provider, { serverUrl, fetchFn })
+  try {
+    await auth(refreshOnly(provider), { serverUrl, fetchFn })
+  } catch (err) {
+    log(
+      'info',
+      err instanceof RefreshOnlyAbort
+        ? `[mcp] ${name}: the stored token could not be refreshed; a new authorization is needed`
+        : `[mcp] ${name}: proactive token refresh failed (${
+            err instanceof Error ? err.message : String(err)
+          }); continuing`,
+    )
+  }
 }
 
 const openConnection = async (
@@ -194,7 +257,8 @@ const openConnection = async (
           `[mcp] ${name}: an explicit Authorization header shadows the OAuth token from authProvider`,
         )
       }
-      await refreshIfExpired(cfg.authProvider, cfg.url, cfg.fetch)
+      assertSecureOAuthUrl(cfg.url, name)
+      await refreshIfExpired(cfg.authProvider, cfg.url, cfg.fetch, log, name)
     }
     const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
       requestInit: headers ? { headers } : undefined,
@@ -205,7 +269,9 @@ const openConnection = async (
     // Without these, a dropped SSE stream or a transport-level protocol error
     // is swallowed and the agent just stops getting results.
     transport.onerror = (err) => log('warn', `[mcp] ${name}: transport error - ${err.message}`)
-    transport.onclose = () => log('warn', `[mcp] ${name}: transport closed`)
+    // info, not warn: an ordinary close() ends here too, and a routine
+    // teardown logged as a warning trains people to ignore warnings.
+    transport.onclose = () => log('info', `[mcp] ${name}: transport closed`)
 
     client = new Client({
       name: opts.clientName ?? 'agent-web',
@@ -254,17 +320,26 @@ export const connectMcpHttp = async (
   const tools: ToolSet = {}
   const catalog: McpCatalogEntry[] = []
   const results: McpServerResult[] = []
+  // server name → the tool keys it currently owns, so a refresh can remove
+  // exactly its own entries.
+  const mountedKeys = new Map<string, string[]>()
 
   const mountTools = (name: string, client: Client, listed: McpToolDescriptor[]): void => {
     const prefix = `${sanitizeName(name)}__`
     // Drop this server's existing entries first, mutating in place so external
-    // references (an agent's live ToolSet) stay valid.
-    for (const k of Object.keys(tools)) {
-      if (k.startsWith(prefix)) delete tools[k]
+    // references (an agent's live ToolSet) stay valid. We delete the keys this
+    // server actually mounted rather than everything matching its prefix:
+    // sanitizing can make two server names share a prefix ("docs.v1" and
+    // "docs/v1"), and one server's prefix can nest inside another's ("a" and
+    // "a__b") — either way a prefix sweep would silently unmount a DIFFERENT
+    // server's tools.
+    for (const k of mountedKeys.get(name) ?? []) {
+      delete tools[k]
     }
     for (let i = catalog.length - 1; i >= 0; i--) {
       if (catalog[i].server === name) catalog.splice(i, 1)
     }
+    const keys: string[] = []
 
     let mounted = 0
     for (const t of listed) {
@@ -305,8 +380,10 @@ export const connectMcpHttp = async (
         },
       })
       catalog.push({ name: key, description, server: name })
+      keys.push(key)
       mounted += 1
     }
+    mountedKeys.set(name, keys)
     log('info', `[mcp] ${name}: ${mounted} tools mounted`)
   }
 
