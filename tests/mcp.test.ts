@@ -9,6 +9,7 @@ import {
   flattenContent,
   MemoryOAuthStorage,
   readOAuthCallback,
+  UnauthorizedError,
   VaultOAuthStorage,
 } from '../dist/mcp.js'
 
@@ -848,4 +849,21 @@ test('OAuth: a dead refresh token falls back to a fresh authorization', async ()
   // invalid_grant must clear the dead tokens, or every later attempt retries
   // the same doomed refresh.
   assert.equal(await provider.tokens(), undefined)
+})
+
+test('the subpath re-exports UnauthorizedError so a host can identify auth failures', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  const provider = makeProvider()
+  const mcp = await connectMcpHttp({
+    docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn },
+  })
+  assert.equal(mcp.results[0].needsAuthorization, true)
+
+  // The SDK's class never assigns `this.name`, so it reads as "Error" —
+  // a host checking err.name would silently never match. Identity is the
+  // only reliable handle, and it has to be reachable from this package.
+  const err = new UnauthorizedError()
+  assert.equal(err.name, 'Error', 'guards the assumption this export exists for')
+  assert.ok(err instanceof UnauthorizedError)
+  assert.ok(err instanceof Error)
 })
