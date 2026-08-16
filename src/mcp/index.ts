@@ -1,4 +1,4 @@
-export { connectMcpHttp, flattenContent } from './http.js'
+export { connectMcpHttp, diagnoseMcpCors, flattenContent } from './http.js'
 // Re-exported so a host can identify an authorization failure by identity.
 // The SDK's class does not set `name`, so `err.name === 'UnauthorizedError'`
 // is always false — string sniffing is not an option, and a host that only

@@ -5,6 +5,7 @@ import {
   beginMcpOAuth,
   BrowserOAuthProvider,
   connectMcpHttp,
+  diagnoseMcpCors,
   finishMcpOAuth,
   flattenContent,
   MemoryOAuthStorage,
@@ -866,4 +867,83 @@ test('the subpath re-exports UnauthorizedError so a host can identify auth failu
   assert.equal(err.name, 'Error', 'guards the assumption this export exists for')
   assert.ok(err instanceof UnauthorizedError)
   assert.ok(err instanceof Error)
+})
+
+// ── The failure a browser refuses to explain ────────────────────────────────
+// A CORS rejection reaches JavaScript as a bare TypeError, identical to a
+// server being down. The interesting case is the one that looks like the OAuth
+// consent step broke: the origin is allowed, so discovery, the token exchange
+// and `initialize` all succeed, and then the transport adds the
+// MCP-Protocol-Version header that the spec requires afterwards — and a server
+// whose CORS list predates that requirement blocks every request from there on.
+
+test('diagnoseMcpCors: names the refused header when a plain request gets through', async () => {
+  const seen: string[][] = []
+  const hint = await diagnoseMcpCors(MCP_URL, async (_url, init) => {
+    seen.push(Object.keys((init?.headers ?? {}) as Record<string, string>))
+    return new Response('{}', { status: 200 })
+  })
+  assert.match(hint ?? '', /MCP-Protocol-Version/)
+  assert.match(hint ?? '', /Access-Control-Allow-Headers/)
+  // The probe must ask for nothing beyond content-type, or it proves nothing.
+  assert.deepEqual(seen, [['content-type']])
+})
+
+test('diagnoseMcpCors: a plain request that is also blocked points at the origin', async () => {
+  const hint = await diagnoseMcpCors(MCP_URL, async () => {
+    throw new TypeError('Failed to fetch')
+  })
+  assert.match(hint ?? '', /Access-Control-Allow-Origin/)
+  assert.doesNotMatch(hint ?? '', /MCP-Protocol-Version/)
+})
+
+test('diagnoseMcpCors: an unreadable 401 challenge is called out as well', async () => {
+  const hint = await diagnoseMcpCors(
+    MCP_URL,
+    async () => new Response('{}', { status: 401 }), // no WWW-Authenticate exposed
+  )
+  assert.match(hint ?? '', /WWW-Authenticate/)
+  assert.match(hint ?? '', /Access-Control-Expose-Headers/)
+})
+
+test('diagnoseMcpCors: stays quiet about the challenge when it is readable', async () => {
+  const hint = await diagnoseMcpCors(
+    MCP_URL,
+    async () =>
+      new Response('{}', {
+        status: 401,
+        headers: { 'www-authenticate': 'Bearer resource_metadata="https://x.example.test/rm"' },
+      }),
+  )
+  assert.doesNotMatch(hint ?? '', /Expose-Headers/)
+})
+
+test('connectMcpHttp: a blocked fetch is reported with the CORS diagnosis attached', async () => {
+  let calls = 0
+  const mcp = await connectMcpHttp({
+    docs: {
+      url: MCP_URL,
+      fetch: async () => {
+        calls += 1
+        // The transport's own requests are blocked; the diagnostic probe is not.
+        if (calls === 1) throw new TypeError('Failed to fetch')
+        return new Response('{}', { status: 200 })
+      },
+    },
+  })
+  const docs = mcp.results.find((r) => r.name === 'docs')
+  assert.equal(docs?.connected, false)
+  assert.match(docs?.error ?? '', /Failed to fetch/)
+  assert.match(docs?.error ?? '', /MCP-Protocol-Version/)
+  await mcp.close()
+})
+
+test('connectMcpHttp: an ordinary server error is not dressed up as a CORS problem', async () => {
+  const mcp = await connectMcpHttp({
+    docs: { url: MCP_URL, fetch: async () => new Response('boom', { status: 500 }) },
+  })
+  const docs = mcp.results.find((r) => r.name === 'docs')
+  assert.equal(docs?.connected, false)
+  assert.doesNotMatch(docs?.error ?? '', /Access-Control/)
+  await mcp.close()
 })

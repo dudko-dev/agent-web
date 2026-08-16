@@ -232,13 +232,43 @@ navigates on its own — the SDK can demand authorization from inside a running
 tool call, and evicting the user then would discard the run. The URL is recorded
 on `provider.authorizationUrl` and the app decides when to use it.
 
-Two things to check on the **server** side, both invisible until they bite:
+### CORS: what the server must send
 
-- CORS must allow `Authorization` and expose `WWW-Authenticate` and
-  `mcp-session-id` (`Access-Control-Expose-Headers`). Without the first, the
-  browser cannot read the 401 challenge and discovery never starts.
-- The authorization server's `/register`, metadata and token endpoints must be
-  CORS-enabled too — a browser client calls them directly.
+A browser tells JavaScript nothing about why it blocked a request — a CORS
+rejection and a server that is down both arrive as `TypeError: Failed to fetch`,
+with the real reason printed only to the devtools console. So these are worth
+checking first rather than last:
+
+```
+Access-Control-Allow-Origin:   <your origin>
+Access-Control-Allow-Methods:  GET, POST, DELETE, OPTIONS
+Access-Control-Allow-Headers:  Content-Type, Authorization, mcp-session-id,
+                               MCP-Protocol-Version, Last-Event-ID
+Access-Control-Expose-Headers: mcp-session-id, WWW-Authenticate
+```
+
+Each line earns its place:
+
+- **`MCP-Protocol-Version` in Allow-Headers** is the one that bites hardest. The
+  spec has required that header on every request *after* `initialize` since
+  2025-06-18, and CORS lists written before that date omit it. The first request
+  does not carry it, so discovery, the whole OAuth dance and `initialize` all
+  succeed — and then everything afterwards is blocked. It reads exactly like the
+  consent step failing, and sends you to debug the client.
+- **`WWW-Authenticate` in Expose-Headers**, or the browser hides the 401
+  challenge from JS and OAuth discovery never starts.
+- **`Last-Event-ID`** for resuming a dropped SSE stream.
+- The authorization server's `/register`, metadata and token endpoints need CORS
+  too, `OPTIONS` included — a browser client calls them directly.
+- If the server uses the MCP SDK's DNS-rebinding protection, its `allowedOrigins`
+  must contain your origin. Left empty, it answers **403 `Origin not allowed`**
+  to any request that carries an `Origin` header — which is every request a
+  browser makes.
+
+When a connection does fail this way, `connectMcpHttp` no longer just repeats the
+browser's silence: it re-probes the endpoint with a plain request and, if that
+gets through, says which header is being refused. `diagnoseMcpCors(url)` is
+exported so a UI can show the same sentence.
 
 ## Configuration (highlights)
 

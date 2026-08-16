@@ -238,6 +238,68 @@ const refreshIfExpired = async (
   }
 }
 
+/**
+ * A fetch the browser refused for CORS reasons is indistinguishable, from
+ * JavaScript, from a server that is simply down: both surface as a bare
+ * `TypeError`. The reason is deliberately withheld, and the browser prints it
+ * only to the devtools console — which is why this failure is usually read as a
+ * client bug and debugged in the wrong place for a long time.
+ */
+const isNetworkLevelFailure = (err: unknown): boolean =>
+  err instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(String(err))
+
+/**
+ * Work out WHY the browser blocked us, by asking a question it will answer.
+ *
+ * A request carrying only `content-type` needs the same preflight as the real
+ * one but asks for nothing else. So if the plain request gets through while the
+ * transport's did not, the origin is fine and a *header* is the problem — and
+ * the header the transport adds is `MCP-Protocol-Version`, which the spec has
+ * required on every post-initialize request since 2025-06-18 and which server
+ * CORS lists written before that date do not include. That is the shape of the
+ * bug that lets OAuth and `initialize` succeed and then kills the connection
+ * moments later, looking for all the world like the consent step failed.
+ *
+ * Exported because a UI wants to say this too, not just log it.
+ */
+export const diagnoseMcpCors = async (
+  url: string,
+  fetchFn: FetchLike = globalThis.fetch,
+): Promise<string | undefined> => {
+  let plain: Response
+  try {
+    plain = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'ping' }),
+    })
+  } catch {
+    return (
+      `the browser blocked every request to ${url}, including a plain one. ` +
+      'The server is unreachable, or it does not answer the CORS preflight for this ' +
+      'origin: it must return Access-Control-Allow-Origin (and handle OPTIONS) on the ' +
+      'MCP endpoint, the OAuth endpoints and the /.well-known documents.'
+    )
+  }
+  const hints = [
+    `a plain request to ${url} succeeded (HTTP ${plain.status}) but the transport's did not, ` +
+      'so the origin is allowed and a request HEADER is being refused. Add ' +
+      'MCP-Protocol-Version (required on every request after initialize) and Last-Event-ID ' +
+      "to the server's Access-Control-Allow-Headers, alongside Content-Type, Authorization " +
+      'and mcp-session-id.',
+  ]
+  // A 401 whose challenge JS cannot read means OAuth discovery cannot start
+  // from a browser at all, so say so while we are here.
+  if (plain.status === 401 && !plain.headers.get('www-authenticate')) {
+    hints.push(
+      'The server also answers 401 without exposing WWW-Authenticate: add it to ' +
+        'Access-Control-Expose-Headers, or a browser client cannot read the challenge ' +
+        'and OAuth discovery never starts.',
+    )
+  }
+  return hints.join(' ')
+}
+
 const openConnection = async (
   name: string,
   cfg: McpHttpServerConfig,
@@ -295,7 +357,13 @@ const openConnection = async (
     // lifetime of the tab.
     if (client) await client.close().catch(() => {})
     const needsAuthorization = err instanceof UnauthorizedError
-    const message = err instanceof Error ? err.message : String(err)
+    let message = err instanceof Error ? err.message : String(err)
+    // Turn "TypeError: Failed to fetch" into the sentence the reader needs.
+    // Only on the failure path, so the extra request costs nothing in normal use.
+    if (!needsAuthorization && isNetworkLevelFailure(err)) {
+      const hint = await diagnoseMcpCors(cfg.url, cfg.fetch).catch(() => undefined)
+      if (hint) message = `${message} - ${hint}`
+    }
     log(
       'error',
       needsAuthorization
