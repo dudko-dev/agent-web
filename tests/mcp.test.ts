@@ -60,6 +60,11 @@ const createMockServer = (opts: MockOptions = {}) => {
     grants: [] as string[],
     issued: 1,
     lastCodeVerifier: undefined as string | undefined,
+    lastRegistration: undefined as Record<string, unknown> | undefined,
+    /** Set to answer the next token request with invalid_client. */
+    rejectClient: false,
+    /** Set to answer dynamic registration with invalid_client_metadata. */
+    failRegistration: false,
   }
 
   const handleRpc = (msg: RpcMessage): unknown => {
@@ -145,13 +150,28 @@ const createMockServer = (opts: MockOptions = {}) => {
     if (href === `${AS_URL}/register`) {
       state.registrations += 1
       const metadata = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
-      return jsonResponse({ ...metadata, client_id: 'dcr-client-1', client_id_issued_at: 1 }, 201)
+      state.lastRegistration = metadata
+      if (state.failRegistration) {
+        return jsonResponse(
+          { error: 'invalid_client_metadata', error_description: 'redirect_uri not allowed' },
+          400,
+        )
+      }
+      return jsonResponse(
+        { ...metadata, client_id: `dcr-client-${state.registrations}`, client_id_issued_at: 1 },
+        201,
+      )
     }
 
     if (href === `${AS_URL}/token`) {
       const params = new URLSearchParams(String(init.body ?? ''))
       const grant = params.get('grant_type') ?? ''
       state.grants.push(grant)
+      // "The client you claim to be is not registered here" — what an AS says
+      // after it has forgotten (or rotated away) a dynamic registration.
+      if (state.rejectClient) {
+        return jsonResponse({ error: 'invalid_client' }, 401)
+      }
       if (grant === 'authorization_code') {
         // PKCE is mandatory for a public client — fail loudly if the SDK ever
         // stops sending the verifier.
@@ -470,6 +490,83 @@ test('OAuth: unauthenticated connect registers dynamically and asks for authoriz
   assert.equal(url.searchParams.get('redirect_uri'), REDIRECT_URL)
   // The registration is persisted, so a page reload does not re-register.
   assert.deepEqual((await provider.clientInformation())?.client_id, 'dcr-client-1')
+})
+
+test('DCR: the registration request describes a public PKCE client', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  const provider = new BrowserOAuthProvider({
+    serverUrl: MCP_URL,
+    redirectUrl: REDIRECT_URL,
+    storage: new MemoryOAuthStorage(),
+    clientName: 'agent-web-test',
+  })
+  await connectMcpHttp({ docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn } })
+
+  const sent = mock.state.lastRegistration
+  assert.ok(sent, 'a registration body was posted')
+  assert.equal(sent.client_name, 'agent-web-test')
+  assert.deepEqual(sent.redirect_uris, [REDIRECT_URL])
+  assert.deepEqual(sent.response_types, ['code'])
+  // Without refresh_token in grant_types the AS may never issue one, and every
+  // expiry would become an interactive re-authorization.
+  assert.deepEqual(sent.grant_types, ['authorization_code', 'refresh_token'])
+  // A browser cannot hold a client_secret; PKCE is what protects the exchange.
+  assert.equal(sent.token_endpoint_auth_method, 'none')
+  // Scope comes from the resource metadata when the caller didn't pin one.
+  assert.equal(sent.scope, 'mcp:tools')
+})
+
+test('DCR: a stored registration is reused instead of registering again', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  const provider = makeProvider()
+
+  await connectMcpHttp({ docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn } })
+  await connectMcpHttp({ docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn } })
+
+  assert.equal(mock.state.registrations, 1, 'a reload must not mint a second client')
+  assert.equal((await provider.clientInformation())?.client_id, 'dcr-client-1')
+})
+
+test('DCR: an invalid_client response re-registers and restarts authorization', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  const provider = makeProvider()
+  // A registration the AS has since forgotten (redeployed, pruned, rotated).
+  await provider.saveClientInformation({ client_id: 'forgotten-client' })
+  await provider.saveTokens({
+    access_token: 'access-1',
+    token_type: 'Bearer',
+    expires_in: 3600,
+    refresh_token: 'refresh-1',
+  })
+  mock.state.validTokens.clear()
+  mock.state.rejectClient = true
+
+  const mcp = await connectMcpHttp({
+    docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn },
+  })
+
+  assert.equal(mcp.results[0].needsAuthorization, true)
+  assert.equal(mock.state.registrations, 1, 'the dead client_id was replaced by a new registration')
+  assert.equal((await provider.clientInformation())?.client_id, 'dcr-client-1')
+  // Credentials tied to the dead client must go, or every later attempt
+  // retries the same doomed refresh.
+  assert.equal(await provider.tokens(), undefined)
+  assert.ok(provider.authorizationUrl)
+  assert.equal(provider.authorizationUrl.searchParams.get('client_id'), 'dcr-client-1')
+})
+
+test('DCR: a rejected registration surfaces the reason instead of a bare 401', async () => {
+  const mock = createMockServer({ requireAuth: true })
+  mock.state.failRegistration = true
+  const provider = makeProvider()
+
+  const mcp = await connectMcpHttp({
+    docs: { url: MCP_URL, authProvider: provider, fetch: mock.fetchFn },
+  })
+
+  assert.equal(mcp.results[0].connected, false)
+  assert.match(mcp.results[0].error ?? '', /redirect_uri not allowed/)
+  assert.equal(await provider.clientInformation(), undefined, 'nothing half-registered was stored')
 })
 
 test('OAuth: full flow — authorize, exchange the code, connect, call a tool', async () => {
