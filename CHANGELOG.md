@@ -1,3 +1,8 @@
+# 0.0.16 / 2026-09-05
+
+### :tada: Enhancements
+- Updated dependencies: @ai-sdk/anthropic, @ai-sdk/deepseek, @ai-sdk/google, @ai-sdk/openai, @ai-sdk/openai-compatible, @ai-sdk/xai, ai, typescript, zod
+
 # 0.0.15 / 2026-08-29
 
 ### :tada: Enhancements
