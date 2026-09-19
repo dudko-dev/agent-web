@@ -135,7 +135,7 @@
     "@ai-sdk/google": "^4.0.0",
     "@ai-sdk/openai": "^4.0.0",
     "@ai-sdk/openai-compatible": "^3.0.0",
-    "@ai-sdk/xai": "^4.0.0",
+    "@ai-sdk/xai": "^5.0.0",
     "@browser-ai/core": "^3.0.0",
     "@browser-ai/web-llm": "^3.0.0",
     "@mlc-ai/web-llm": ">=0.2.70",
@@ -188,6 +188,6 @@
     "fake-indexeddb": "^6.2.5",
     "prettier": "^3.9.8",
     "tsup": "^8.5.1",
-    "typescript": "^7.0.2"
+    "typescript": "^5.9.3"
   }
 }
