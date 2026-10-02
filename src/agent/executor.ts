@@ -5,7 +5,7 @@ import { renderActiveSkills, renderSkillIndex } from '../skills.js'
 import { renderCatalog } from '../tools/prompted.js'
 import { FIND_TOOLS_NAME } from '../tools/search.js'
 import { BLOCKER, type IPlanStep, type IStepResult, type IUsage } from './loop-types.js'
-import { stageCall, type AgentContext } from './internal.js'
+import { imageRefusal, promptFor, stageCall, type AgentContext } from './internal.js'
 
 /**
  * Split the executor's reply into a clean summary and a structural `blocked`
@@ -87,7 +87,7 @@ export const executeStep = async (
   const loop = await runToolLoop(ctx.executorModel, {
     mode: ctx.executorMode,
     ...stageCall(ctx, 'executor', parts.system),
-    prompt: parts.prompt,
+    ...promptFor(ctx, parts.prompt),
     tools: ctx.tools,
     // In search mode the active set grows while the step runs.
     activeTools: searchMode
@@ -112,6 +112,8 @@ export const executeStep = async (
         ctx.emit({ type: 'step.tool-result', step, name, output, ok })
       },
     },
+  }).catch((err: unknown) => {
+    throw imageRefusal(ctx, err, ctx.executorModel) ?? err
   })
   ctx.log.debug('executor text:', loop.text)
 

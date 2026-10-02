@@ -3,7 +3,7 @@ import { normalizeUsage } from '../llm/util.js'
 import { looksLikeJson, parsePlainText } from '../parse.js'
 import { renderActiveSkills } from '../skills.js'
 import type { IUsage } from './loop-types.js'
-import { stageCall, type AgentContext } from './internal.js'
+import { imageRefusal, promptFor, stageCall, type AgentContext } from './internal.js'
 
 /**
  * Write the final natural-language answer of the run, streaming it as
@@ -30,7 +30,7 @@ export const synthesizeAnswer = async (
   })
   const result = stream(ctx.synthesizerModel, {
     ...stageCall(ctx, 'synthesizer', parts.system),
-    prompt: parts.prompt,
+    ...promptFor(ctx, parts.prompt),
     maxOutputTokens: ctx.config.budgets.synthesizer,
     temperature: ctx.config.temperature,
     abortSignal: ctx.signal,
@@ -45,7 +45,8 @@ export const synthesizeAnswer = async (
       continue
     }
     if (part.type === 'error') {
-      throw part.error instanceof Error ? part.error : new Error(String(part.error))
+      const err = part.error instanceof Error ? part.error : new Error(String(part.error))
+      throw imageRefusal(ctx, err, ctx.synthesizerModel) ?? err
     }
     if (part.type !== 'text-delta') continue
     const delta = part.text

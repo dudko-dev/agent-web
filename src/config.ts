@@ -115,6 +115,12 @@ export interface BrowserAgentConfig {
   thinking?: ThinkingSetting
   /** Per-stage thinking; a stage entry wins over `thinking`. */
   stageThinking?: Partial<Record<ThinkingStage, ThinkingSetting>>
+  /**
+   * Whether the model accepts images. Default: inferred (`supportsImages`) —
+   * local/prompted models are text-only; unknown models are tried and a
+   * refusal is reported as ImagesNotSupportedError.
+   */
+  vision?: boolean
   /** Provider prompt caching (default true): stable system prefixes + Anthropic breakpoints. */
   promptCaching?: PromptCachingSetting
   /** Context compaction (auto + manual `agent.compact()`); see CompactionConfig. */

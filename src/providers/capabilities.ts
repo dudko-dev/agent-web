@@ -35,3 +35,31 @@ export const supportsStructuredOutput = (p: ProviderType): boolean => CLOUD.has(
  */
 export const directBrowserOk = (p: ProviderType): boolean =>
   p === 'google' || p === 'gateway' || p === 'openai-compatible' || p === 'anthropic'
+
+// Local / on-device runtimes: the prompted path is text-only.
+const LOCAL_RE = /web-?llm|mlc|browser-ai|transformers|built-?in/i
+// Text-only model families under otherwise vision-capable providers.
+const TEXT_ONLY_MODEL_RE =
+  /gpt-3\.5|o1-mini|o3-mini|deepseek|text-(davinci|embedding)|embedding|babbage|davinci|codestral/i
+const VISION_PROVIDER_RE = /^(google|anthropic|openai|azure|xai|vertex|bedrock|gemini)/i
+
+/**
+ * Whether a model accepts image input: `true` (expected to), `false` (known
+ * not to — local runtimes, DeepSeek, text-only families), or `undefined`
+ * (unknown, e.g. an OpenAI-compatible server — the agent tries and turns a
+ * provider refusal into a clear error). Override per agent with `vision`.
+ */
+export const supportsImages = (model: unknown): boolean | undefined => {
+  if (typeof model === 'string') {
+    // A gateway model id: "provider/model".
+    const [provider = '', id = model] = model.includes('/') ? model.split('/', 2) : ['', model]
+    if (TEXT_ONLY_MODEL_RE.test(id) || /deepseek/i.test(provider)) return false
+    return VISION_PROVIDER_RE.test(provider) ? true : undefined
+  }
+  if (!model || typeof model !== 'object') return undefined
+  const provider = String((model as { provider?: unknown }).provider ?? '')
+  const id = String((model as { modelId?: unknown }).modelId ?? '')
+  if (LOCAL_RE.test(provider)) return false
+  if (/deepseek/i.test(provider) || TEXT_ONLY_MODEL_RE.test(id)) return false
+  return VISION_PROVIDER_RE.test(provider) ? true : undefined
+}

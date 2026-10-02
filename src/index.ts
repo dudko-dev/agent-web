@@ -24,6 +24,25 @@ export type {
   ProxiedToolSpec,
 } from './subagent/protocol.js'
 
+// ── Images, files ────────────────────────────────────────────────────────────
+export { ImagesNotSupportedError, toImagePart, isImageRefusal } from './images.js'
+export type { RunImage } from './images.js'
+export {
+  VirtualFileSystem,
+  normalizePath,
+  mimeFromPath,
+  isTextMime,
+  bytesToBase64,
+} from './files/vfs.js'
+export type {
+  VirtualFile,
+  VirtualFileInfo,
+  VirtualFileSystemOptions,
+  VfsListener,
+} from './files/vfs.js'
+export { createFileTools } from './files/tools.js'
+export type { FileToolsOptions } from './files/tools.js'
+
 // ── Thinking, limits, caching ────────────────────────────────────────────────
 export { resolveThinking, thinkingFor, mergeProviderOptions } from './thinking.js'
 export type {
@@ -75,6 +94,7 @@ export {
   supportsNativeTools,
   supportsStructuredOutput,
   directBrowserOk,
+  supportsImages,
 } from './providers/capabilities.js'
 export { isDirectModel, isProviderSpec } from './providers/types.js'
 export type {
@@ -95,7 +115,13 @@ export { getOrCreateVaultKey, encryptJSON, decryptJSON } from './secrets/crypto.
 export type { EncryptedBlob } from './secrets/crypto.js'
 
 // ── Storage (shared IndexedDB owner) ─────────────────────────────────────────
-export { openAgentWebDB, KEYS_STORE, SECRETS_STORE, SESSIONS_STORE } from './storage/db.js'
+export {
+  openAgentWebDB,
+  KEYS_STORE,
+  SECRETS_STORE,
+  SESSIONS_STORE,
+  FILES_STORE,
+} from './storage/db.js'
 export type { AgentWebDBOptions } from './storage/db.js'
 
 // ── Low-level LLM helpers (simple generation, tool loop) ─────────────────────

@@ -14,6 +14,8 @@ implements the same features with the same field and event names.
 - [Tool consent and autopilot](#tool-consent-and-autopilot)
 - [Large tool catalogues (several MCP servers)](#large-tool-catalogues-several-mcp-servers)
 - [Subagents (in-process or Web Workers)](#subagents-in-process-or-web-workers)
+- [Images in, and models that can't see them](#images-in-and-models-that-cant-see-them)
+- [Virtual file system](#virtual-file-system)
 - [Autonomy](#autonomy)
 - [Event reference](#event-reference)
 
@@ -287,6 +289,55 @@ serveSubagentWorker({
   apply.
 - The protocol is plain structured-clone messages over any `MessageEndpoint`
   (a `Worker`, a worker's `self`, a `MessagePort`).
+
+## Images in, and models that can't see them
+
+```ts
+await agent.run('What is wrong on this screenshot?', {
+  images: [{ data: 'data:image/png;base64,…', name: 'screen.png' }], // or base64 + mediaType, or bytes
+})
+```
+
+Images reach the planner, the executor (every step) and the synthesizer as
+image parts of the user message. Whether a model can take them is
+`agent.capabilities.images`:
+
+- `false` — local / prompted-mode models (WebLLM, built-in AI), DeepSeek and
+  text-only families (`gpt-3.5`, `o1-mini`, …), or `vision: false` in the
+  config. A run with images then **ends immediately** — no tokens spent — with
+  an `error` event (phase `run`) and `RunResult.final` set to
+  `ImagesNotSupportedError`'s message: *The model "…" can't take images (…).
+  Remove the image, or switch to a vision-capable model…*
+- `true` — Gemini, Claude, GPT-4o/4.1/5, Grok (or `vision: true`).
+- `undefined` — unknown (an OpenAI-compatible server): the run tries, and a
+  provider refusal is turned into the same `ImagesNotSupportedError` message
+  ("the provider said: …") instead of a raw API error.
+
+A UI should check `agent.capabilities.images` before accepting a paste
+(`@dudko.dev/agent-web-react`'s composer does). Memory stores a text note of
+the images ("[attached image(s): screen.png]"), never their bytes.
+
+## Virtual file system
+
+```ts
+import { VirtualFileSystem, createFileTools } from '@dudko.dev/agent-web'
+
+const vfs = new VirtualFileSystem() // IndexedDB; { memory: true } for tests / private mode
+await vfs.write('/notes/todo.md', '- ship it')
+await vfs.writeDataUrl('/img/screen.png', dataUrl)
+createAgent({ model, tools: { ...tools, ...createFileTools(vfs) } }) // fs_list, fs_read, fs_write, fs_delete
+```
+
+A browser workspace shared by the user and the agent: attachments land there,
+the agent reads them and writes reports back. Paths are absolute and POSIX-like
+(`..` cannot escape the root); text is stored as UTF-8, binary as base64 with a
+MIME type; `list(prefix)`, `read`, `readDataUrl`, `delete`, `clear`, and
+`onChange(listener)` for live UIs. `namespace` isolates several file systems
+in one database; `maxFileBytes` (10 MB) caps a file. `fs_list` / `fs_read` are
+read-only (no consent prompt in `ask-writes`); `fs_write` / `fs_delete` are
+not; `createFileTools(vfs, { readOnly: true })` mounts only the readers. The
+files live in the shared IndexedDB database (`files` store, schema v2 — an
+existing v1 database is upgraded in place).
 
 ## Autonomy
 

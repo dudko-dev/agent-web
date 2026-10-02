@@ -48,7 +48,9 @@ behind every decision.
   catalogues), `wrap.ts` (per-run tool wrapping: gate, call budget, output cap).
 - `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
   `protocol` (postMessage shapes).
-- `src/{thinking,limits,caching,skills}.ts` — see docs/capabilities.md.
+- `src/{thinking,limits,caching,skills,images}.ts` — see docs/capabilities.md.
+- `src/files/` — `vfs` (VirtualFileSystem, IndexedDB `files` store) + `tools`
+  (createFileTools).
 - `src/mcp/` — optional HTTP connector (`./mcp` subpath): `http` (transport,
   mount, refresh) + `oauth` (OAuth 2.1 / DCR provider, vault-backed tokens).
 - `src/{parse,prompts,events,config,index}.ts`.
