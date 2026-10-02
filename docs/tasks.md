@@ -79,3 +79,27 @@ Status of the work. See [design.md](./design.md) for the architecture,
   concerns that live in the sibling package `@dudko.dev/agent`.
 - Shipping shared/app-owned API keys to the client — use a proxy or the gateway
   (see [security.md](./security.md)).
+
+## Done — agent capabilities (see [capabilities.md](./capabilities.md))
+
+- [x] **Thinking** — `thinking` / `stageThinking` (portable level or exact
+      budget), streamed thoughts, reasoning tokens in usage.
+- [x] **Token limits** — `limits` (input / output / reasoning / total per run,
+      per-call output caps), `maxToolCalls`, `maxPlanSteps`; soft caps that stop
+      at the next boundary and still answer.
+- [x] **Context** — step results and tool findings flow into later steps and
+      the answer; auto + manual compaction (history, run trace); model-facing
+      tool-output cap.
+- [x] **Prompt caching** — stable system prefixes, Anthropic breakpoints,
+      OpenAI cache keys; cached tokens in usage.
+- [x] **Skills** — SKILL.md parsing/loading, planner selection, `load_skill` /
+      `read_skill_file`.
+- [x] **Tool consent** — autopilot / ask-writes / ask-all / read-only, glob
+      rules, "always allow", live `setToolApprovalMode`.
+- [x] **Large MCP catalogues** — pagination, per-server deadlines, readOnly
+      annotations, `search` strategy with `find_tools`.
+- [x] **Subagents** — `createSubagentTool` in-process or in a Web Worker
+      (`serveSubagentWorker`), proxied host tools under the parent's consent gate.
+- [x] **Autonomy** — prompts never ask the user; questions that need data are
+      planned as tool work.
+

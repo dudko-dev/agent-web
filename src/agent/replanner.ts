@@ -2,9 +2,10 @@ import { generate, generateStructured } from '../llm/generate.js'
 import { normalizeUsage } from '../llm/util.js'
 import { parseReplannerResponse, type ReplanDecision } from '../parse.js'
 import type { ToolCallMode } from '../prompts.js'
+import { renderActiveSkills } from '../skills.js'
 import type { IUsage } from './loop-types.js'
 import { emptyUsage } from './loop-types.js'
-import { systemFor, type AgentContext } from './internal.js'
+import { stageCall, type AgentContext } from './internal.js'
 import { ReplanSchema } from './schemas.js'
 
 export interface ReplanOutcome {
@@ -28,10 +29,18 @@ export const decideReplan = async (
   remaining: string[],
 ): Promise<ReplanOutcome> => {
   const state = await ctx.state()
+  const active = ctx.activeSkills?.() ?? []
   const commonFor = (mode: ToolCallMode) => {
-    const parts = ctx.prompts.replanner({ goal, state, done, remaining, mode })
+    const parts = ctx.prompts.replanner({
+      goal,
+      state,
+      done,
+      remaining,
+      mode,
+      activeSkills: active.length ? renderActiveSkills(active) : undefined,
+    })
     return {
-      system: systemFor(ctx, parts.system),
+      ...stageCall(ctx, 'replanner', parts.system),
       prompt: parts.prompt,
       maxOutputTokens: ctx.config.budgets.replanner,
       temperature: ctx.config.temperature,

@@ -14,7 +14,9 @@ import type { AgentTool } from './types.js'
  *
  * Optionally add `promptHint` — a short parameter hint like
  * "{ text: string, x?: number }" — which the prompted/salvage path shows to
- * weak local models that can't do native function-calling.
+ * weak local models that can't do native function-calling — and `readOnly:
+ * true` for tools that never change state (the `ask-writes` and `read-only`
+ * approval modes let those run without asking).
  *
  * @example
  *   const tools = {
@@ -27,10 +29,12 @@ import type { AgentTool } from './types.js'
  *   }
  */
 export const defineTool = <INPUT = unknown, OUTPUT = unknown>(
-  config: Tool<INPUT, OUTPUT> & { promptHint?: string },
+  config: Tool<INPUT, OUTPUT> & { promptHint?: string; readOnly?: boolean },
 ): AgentTool => {
-  const { promptHint, ...rest } = config
+  const { promptHint, readOnly, ...rest } = config
   const t = tool(rest as Tool<INPUT, OUTPUT>) as AgentTool
   if (promptHint) t.promptHint = promptHint
+  // Read-only tools pass the consent gate in 'ask-writes' / 'read-only' modes.
+  if (readOnly) t.readOnly = true
   return t
 }

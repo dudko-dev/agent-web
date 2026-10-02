@@ -14,7 +14,15 @@ export interface RawAction {
 
 export type ReplanDecision = 'continue' | 'revise' | 'finish'
 
-const stripFences = (text: string): string => (text || '').replace(/```(?:json)?/gi, '').trim()
+// Reasoning models running locally (Qwen3, DeepSeek-R1 distills) put their
+// chain of thought inline in <think> tags; it is never part of the answer.
+const stripThinking = (text: string): string =>
+  text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s\S]*?<\/think>/i, '')
+
+const stripFences = (text: string): string =>
+  stripThinking(text || '')
+    .replace(/```(?:json)?/gi, '')
+    .trim()
 
 /** Extracts the first balanced {...} or [...] block, respecting strings. */
 const extractBalanced = (text: string, open: '{' | '['): string | undefined => {
@@ -128,6 +136,8 @@ const salvageString = (text: string, field: string): string => {
 export interface PlannerResult {
   reply: string
   plan: string[]
+  /** Skill names the planner picked (empty when none / not asked). */
+  skills: string[]
 }
 
 export const parsePlannerResponse = (raw: string): PlannerResult => {
@@ -135,15 +145,16 @@ export const parsePlannerResponse = (raw: string): PlannerResult => {
   const obj = asObject(text)
   if (obj) {
     const reply = typeof obj.reply === 'string' ? obj.reply.trim() : ''
-    return { reply, plan: normalizeSteps(obj.plan) }
+    return { reply, plan: normalizeSteps(obj.plan), skills: normalizeSteps(obj.skills) }
   }
   if (/"plan"\s*:/.test(text)) {
     return {
       reply: salvageString(text, 'reply'),
       plan: normalizeSteps(salvageStringArray(text, 'plan')),
+      skills: normalizeSteps(salvageStringArray(text, 'skills')),
     }
   }
-  return { reply: looksLikeJson(text) ? '' : text.trim(), plan: [] }
+  return { reply: looksLikeJson(text) ? '' : text.trim(), plan: [], skills: [] }
 }
 
 // --- executor (tool calls) -------------------------------------------------

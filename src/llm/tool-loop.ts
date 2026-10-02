@@ -4,15 +4,20 @@ import {
   streamText,
   type LanguageModel,
   type ModelMessage,
+  type StopCondition,
+  type SystemModelMessage,
   type ToolSet,
 } from 'ai'
 import { addUsage, BLOCKER, emptyUsage, type IToolCall, type IUsage } from '../agent/loop-types.js'
 import { parseExecutorResponse } from '../parse.js'
+import type { ProviderOptionsMap, ThinkingLevel } from '../thinking.js'
 import { dispatch } from '../tools/prompted.js'
 import { clip, normalizeUsage, promptOf, timeoutSignal } from './util.js'
 
 export interface ToolLoopCallbacks {
   onTextDelta?: (delta: string) => void
+  /** The model's streamed thoughts (native mode, thinking enabled). */
+  onReasoningDelta?: (delta: string) => void
   onToolCall?: (name: string, input: unknown) => void
   onToolResult?: (name: string, output: unknown, ok: boolean) => void
 }
@@ -20,20 +25,34 @@ export interface ToolLoopCallbacks {
 export interface ToolLoopOptions {
   /** 'native' = SDK function-calling; 'prompted' = parse JSON out of plain text. */
   mode: 'native' | 'prompted'
-  system?: string
+  system?: string | SystemModelMessage
   prompt?: string
   messages?: ModelMessage[]
   /** In native mode: the callable tools. In prompted mode: used to dispatch salvaged calls. */
   tools: ToolSet
   /**
-   * Restrict callable tools to these names (plan-narrowed). Native mode passes
-   * them to the SDK's `activeTools`; prompted mode bounds `dispatch` to them.
+   * Restrict callable tools to these names (plan-narrowed / search). Native mode
+   * passes them to the SDK's `activeTools`; prompted mode bounds `dispatch` to
+   * them. A function is re-read before every round, so a tool that activates
+   * others (find_tools) takes effect on the next round.
    */
-  activeTools?: string[]
+  activeTools?: string[] | (() => string[])
+  /**
+   * Prompted mode: render catalogue lines for tools that became active during
+   * the call, so the model learns their names and parameters.
+   */
+  describeTools?: (names: string[]) => string
   /** Cap on tool-calling rounds within this call, in both modes (default 4). */
   maxSteps?: number
+  /**
+   * Checked with the usage of the rounds so far, at every round boundary —
+   * return true to stop (e.g. a run-level token budget is spent).
+   */
+  shouldStop?: (usageSoFar: IUsage) => boolean
   maxOutputTokens?: number
   temperature?: number
+  reasoning?: ThinkingLevel
+  providerOptions?: ProviderOptionsMap
   abortSignal?: AbortSignal
   timeoutMs?: number
   callbacks?: ToolLoopCallbacks
@@ -43,6 +62,8 @@ export interface ToolLoopResult {
   text: string
   toolCalls: IToolCall[]
   usage: IUsage
+  /** True when `shouldStop` cut the call short. */
+  stoppedByBudget?: boolean
 }
 
 /**
@@ -59,19 +80,45 @@ export const runToolLoop = (
 ): Promise<ToolLoopResult> =>
   opts.mode === 'prompted' ? runPrompted(model, opts) : runNative(model, opts)
 
+const activeOf = (opts: ToolLoopOptions): string[] | undefined =>
+  typeof opts.activeTools === 'function' ? opts.activeTools() : opts.activeTools
+
+const callExtras = (opts: ToolLoopOptions) => ({
+  ...(opts.system !== undefined ? { instructions: opts.system } : {}),
+  maxOutputTokens: opts.maxOutputTokens,
+  temperature: opts.temperature,
+  ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+  ...(opts.providerOptions ? { providerOptions: opts.providerOptions as never } : {}),
+})
+
 const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<ToolLoopResult> => {
   const toolCalls: IToolCall[] = []
   const pending = new Map<string, { name: string; input: unknown }>()
+  let stoppedByBudget = false
+
+  const stopWhen: StopCondition<ToolSet>[] = [stepCountIs(opts.maxSteps ?? 4)]
+  if (opts.shouldStop) {
+    const shouldStop = opts.shouldStop
+    stopWhen.push(({ steps }) => {
+      const used = steps.reduce((u, s) => addUsage(u, normalizeUsage(s.usage)), emptyUsage())
+      if (!shouldStop(used)) return false
+      stoppedByBudget = true
+      return true
+    })
+  }
+  const initialActive = activeOf(opts)
+  const dynamic = typeof opts.activeTools === 'function'
 
   const result = streamText({
     model,
     tools: opts.tools,
-    ...(opts.activeTools ? { activeTools: opts.activeTools } : {}),
-    stopWhen: stepCountIs(opts.maxSteps ?? 4),
-    system: opts.system,
+    ...(initialActive ? { activeTools: initialActive } : {}),
+    // Re-read the active set before every step so tools activated mid-call
+    // (find_tools) become callable on the next step.
+    ...(dynamic ? { prepareStep: () => ({ activeTools: activeOf(opts) }) } : {}),
+    stopWhen,
+    ...callExtras(opts),
     ...promptOf(opts),
-    maxOutputTokens: opts.maxOutputTokens,
-    temperature: opts.temperature,
     abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
   })
 
@@ -79,6 +126,9 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
     switch (part.type) {
       case 'text-delta':
         if (part.text) opts.callbacks?.onTextDelta?.(part.text)
+        break
+      case 'reasoning-delta':
+        if (part.text) opts.callbacks?.onReasoningDelta?.(part.text)
         break
       case 'tool-call':
         pending.set(part.toolCallId, { name: part.toolName, input: part.input })
@@ -114,7 +164,7 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
   }
 
   const [text, usage] = await Promise.all([result.text, result.usage])
-  return { text: text.trim(), toolCalls, usage: normalizeUsage(usage) }
+  return { text: text.trim(), toolCalls, usage: normalizeUsage(usage), stoppedByBudget }
 }
 
 /** JSON one-liner for a tool input/output; never throws (circular → String). */
@@ -127,14 +177,14 @@ const asJson = (value: unknown): string => {
 }
 
 /** One round's results + the continue-or-finish contract for the next round. */
-const toolResultsPrompt = (results: IToolCall[]): string => {
+const toolResultsPrompt = (results: IToolCall[], newTools: string): string => {
   const lines = results.map(
     (r) =>
       `- ${r.name} ${clip(asJson(r.input), 160)} → ${r.ok ? 'ok' : 'FAILED'}: ${clip(asJson(r.output), 400)}`,
   )
   return `TOOL RESULTS:
 ${lines.join('\n')}
-
+${newTools ? `\nTOOLS NOW AVAILABLE (call them by these exact names):\n${newTools}\n` : ''}
 Continue THIS step using the results above. Reply with a single JSON object, nothing else:
 { "reply": string, "actions": [ { "tool": string, "args": object } ] }
 - If the step is now complete: "actions": [] and a short outcome in "reply".
@@ -156,10 +206,12 @@ const runPrompted = async (
   // never learns what its calls returned — a read-tool would be write-only. Set
   // maxSteps: 1 for the old single-round behaviour.
   const maxRounds = Math.max(1, opts.maxSteps ?? 4)
-  const active = opts.activeTools
-  const tools = active
-    ? Object.fromEntries(Object.entries(opts.tools).filter(([name]) => active.includes(name)))
-    : opts.tools
+  const callable = (): ToolSet => {
+    const active = activeOf(opts)
+    return active
+      ? Object.fromEntries(Object.entries(opts.tools).filter(([name]) => active.includes(name)))
+      : opts.tools
+  }
 
   // One watchdog for the WHOLE call (as native mode does with its single
   // stream), so a slow local model can't run up to maxRounds × timeoutMs; every
@@ -177,15 +229,19 @@ const runPrompted = async (
   const seen = new Set<string>()
   let usage = emptyUsage()
   let text = ''
+  let stoppedByBudget = false
 
   for (let round = 1; round <= maxRounds; round += 1) {
     if (signal?.aborted) break
+    if (opts.shouldStop?.(usage)) {
+      stoppedByBudget = true
+      break
+    }
+    const before = new Set(Object.keys(callable()))
     const result = await generateText({
       model,
-      system: opts.system,
+      ...callExtras(opts),
       messages,
-      maxOutputTokens: opts.maxOutputTokens,
-      temperature: opts.temperature,
       abortSignal: signal,
     })
     usage = addUsage(usage, normalizeUsage(result.usage))
@@ -212,15 +268,24 @@ const runPrompted = async (
     for (const action of parsed.actions) {
       if (signal?.aborted) break // stop mid-batch the moment the caller aborts
       opts.callbacks?.onToolCall?.(action.tool, action.args)
-      const rec = await dispatch(action, tools, { abortSignal: signal })
+      // Re-read per action: an earlier action of this batch may have
+      // activated more tools (find_tools).
+      const rec = await dispatch(action, callable(), { abortSignal: signal })
       toolCalls.push(rec)
       results.push(rec)
       opts.callbacks?.onToolResult?.(rec.name, rec.output, rec.ok)
     }
 
     if (round === maxRounds || signal?.aborted) break
+    const added = Object.keys(callable()).filter((n) => !before.has(n))
     messages.push({ role: 'assistant', content: result.text })
-    messages.push({ role: 'user', content: toolResultsPrompt(results) })
+    messages.push({
+      role: 'user',
+      content: toolResultsPrompt(
+        results,
+        added.length && opts.describeTools ? opts.describeTools(added) : '',
+      ),
+    })
   }
 
   // Prompted mode can't stream, so surface the final reply ONCE (not per round)
@@ -228,5 +293,5 @@ const runPrompted = async (
   // otherwise concatenate every round's full reply.
   if (text) opts.callbacks?.onTextDelta?.(text)
 
-  return { text, toolCalls, usage }
+  return { text, toolCalls, usage, stoppedByBudget }
 }

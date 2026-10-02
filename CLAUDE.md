@@ -43,7 +43,12 @@ behind every decision.
 - `src/tools/` — `define`, `prompted` (catalog + dispatch), `mode`, `types`.
 - `src/agent/` — `schemas`, `planner`/`executor`/`replanner`/`synthesizer`,
   `runner` (createAgent), `loop-types`.
-- `src/memory/` — `store`, `sessions` (IndexedDBStore), `compress`.
+- `src/memory/` — `store`, `sessions` (IndexedDBStore), `compress` (compaction).
+- `src/tools/approval.ts` (consent gate), `search.ts` (find_tools / large
+  catalogues), `wrap.ts` (per-run tool wrapping: gate, call budget, output cap).
+- `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
+  `protocol` (postMessage shapes).
+- `src/{thinking,limits,caching,skills}.ts` — see docs/capabilities.md.
 - `src/mcp/` — optional HTTP connector (`./mcp` subpath): `http` (transport,
   mount, refresh) + `oauth` (OAuth 2.1 / DCR provider, vault-backed tokens).
 - `src/{parse,prompts,events,config,index}.ts`.

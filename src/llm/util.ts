@@ -15,18 +15,29 @@ export const promptOf = (opts: {
 }): { prompt: string } | { messages: ModelMessage[] } =>
   opts.messages ? { messages: opts.messages } : { prompt: opts.prompt ?? '' }
 
-/** Normalise the AI SDK usage shape (fields can be undefined) into IUsage. */
-export const normalizeUsage = (u?: {
+/** The AI SDK usage shape, every field optional (providers omit what they don't report). */
+export interface SdkUsageLike {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
-}): IUsage => {
+  inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number }
+  outputTokenDetails?: { reasoningTokens?: number }
+  /** Pre-v6 flat fields, still emitted by some providers. */
+  reasoningTokens?: number
+  cachedInputTokens?: number
+}
+
+/** Normalise the AI SDK usage shape (fields can be undefined) into IUsage. */
+export const normalizeUsage = (u?: SdkUsageLike): IUsage => {
   const inputTokens = u?.inputTokens ?? 0
   const outputTokens = u?.outputTokens ?? 0
   return {
     inputTokens,
     outputTokens,
     totalTokens: u?.totalTokens ?? inputTokens + outputTokens,
+    reasoningTokens: u?.outputTokenDetails?.reasoningTokens ?? u?.reasoningTokens ?? 0,
+    cachedInputTokens: u?.inputTokenDetails?.cacheReadTokens ?? u?.cachedInputTokens ?? 0,
+    cacheWriteTokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
   }
 }
 

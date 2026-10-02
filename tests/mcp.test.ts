@@ -34,8 +34,12 @@ interface RpcMessage {
 
 interface MockOptions {
   requireAuth?: boolean
-  tools?: { name: string; description?: string; inputSchema?: unknown }[]
+  tools?: { name: string; description?: string; inputSchema?: unknown; annotations?: unknown }[]
   failListTools?: boolean
+  /** Paginate tools/list with this many tools per page. */
+  pageSize?: number
+  /** Never answer tools/list (a hung server). */
+  hangListTools?: boolean
 }
 
 const DEFAULT_TOOLS = [
@@ -95,6 +99,18 @@ const createMockServer = (opts: MockOptions = {}) => {
           jsonrpc: '2.0',
           id: msg.id,
           error: { code: -32000, message: 'tools/list exploded' },
+        }
+      }
+      if (opts.pageSize) {
+        const start = Number((msg.params as { cursor?: string } | undefined)?.cursor ?? 0)
+        const end = start + opts.pageSize
+        return {
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            tools: tools.slice(start, end),
+            ...(end < tools.length ? { nextCursor: String(end) } : {}),
+          },
         }
       }
       return { jsonrpc: '2.0', id: msg.id, result: { tools } }
@@ -231,6 +247,9 @@ const createMockServer = (opts: MockOptions = {}) => {
       }
       const parsed = JSON.parse(String(init.body ?? 'null')) as RpcMessage | RpcMessage[]
       const messages = Array.isArray(parsed) ? parsed : [parsed]
+      if (opts.hangListTools && messages.some((m) => m.method === 'tools/list')) {
+        return new Promise<Response>(() => {})
+      }
       const replies = messages.map(handleRpc).filter((r) => r !== undefined)
       if (replies.length === 0) return new Response(null, { status: 202 })
       return jsonResponse(replies.length === 1 ? replies[0] : replies)
@@ -945,5 +964,65 @@ test('connectMcpHttp: an ordinary server error is not dressed up as a CORS probl
   const docs = mcp.results.find((r) => r.name === 'docs')
   assert.equal(docs?.connected, false)
   assert.doesNotMatch(docs?.error ?? '', /Access-Control/)
+  await mcp.close()
+})
+
+// ── large catalogues: pagination, deadlines, annotations ────────────────────
+
+test('connectMcpHttp: follows nextCursor so every page of tools is mounted', async () => {
+  const tools = Array.from({ length: 25 }, (_, i) => ({
+    name: `t${i}`,
+    inputSchema: { type: 'object' },
+  }))
+  const mock = createMockServer({ tools, pageSize: 10 })
+  const mcp = await connectMcpHttp({ big: { url: MCP_URL, fetch: mock.fetchFn } })
+  assert.equal(Object.keys(mcp.tools).length, 25)
+  assert.equal(mcp.catalog.at(-1)?.name, 'big__t24')
+  await mcp.refreshServer('big')
+  assert.equal(Object.keys(mcp.tools).length, 25)
+  await mcp.close()
+})
+
+test('connectMcpHttp: a server that hangs is cut off by connectTimeoutMs, others still mount', async () => {
+  const hung = createMockServer({ hangListTools: true })
+  const fine = createMockServer()
+  const started = Date.now()
+  const mcp = await connectMcpHttp(
+    {
+      slow: { url: MCP_URL, fetch: hung.fetchFn },
+      docs: { url: MCP_URL, fetch: fine.fetchFn },
+    },
+    { connectTimeoutMs: 300 },
+  )
+  assert.ok(Date.now() - started < 3_000)
+  assert.deepEqual(
+    mcp.results.map((r) => [r.name, r.connected]),
+    [
+      ['slow', false],
+      ['docs', true],
+    ],
+  )
+  assert.match(mcp.results[0].error ?? '', /timed out after 300 ms/)
+  assert.deepEqual(Object.keys(mcp.tools), ['docs__echo'])
+  await mcp.close()
+})
+
+test('connectMcpHttp: readOnlyHint marks tools read-only for the consent gate', async () => {
+  const mock = createMockServer({
+    tools: [
+      { name: 'read', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+      { name: 'write', inputSchema: { type: 'object' } },
+    ],
+  })
+  const mcp = await connectMcpHttp({ s: { url: MCP_URL, fetch: mock.fetchFn } })
+  assert.equal((mcp.tools.s__read as { readOnly?: boolean }).readOnly, true)
+  assert.equal((mcp.tools.s__write as { readOnly?: boolean }).readOnly, undefined)
+  assert.deepEqual(
+    mcp.catalog.map((c) => [c.name, c.readOnly ?? false]),
+    [
+      ['s__read', true],
+      ['s__write', false],
+    ],
+  )
   await mcp.close()
 })

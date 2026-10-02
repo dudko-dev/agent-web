@@ -43,12 +43,16 @@ export interface McpHttpServerConfig {
   fetch?: FetchLike
   /** Overrides for the SSE reconnect backoff. Merged over the defaults below. */
   reconnection?: Partial<StreamableHTTPReconnectionOptions>
+  /** Give up on this server after this many ms of connect + listing (overrides the option). */
+  connectTimeoutMs?: number
 }
 
 export interface McpCatalogEntry {
   name: string
   description: string
   server: string
+  /** The server marked the tool read-only (`annotations.readOnlyHint`). */
+  readOnly?: boolean
 }
 
 export interface McpServerResult {
@@ -88,6 +92,47 @@ export interface ConnectMcpOptions {
    * connector deliberately does not refresh behind a running agent's back.
    */
   onToolsChanged?: (server: string) => void
+  /**
+   * Per-server deadline for connect + tool listing (default 30 000 ms). A
+   * server that misses it is reported failed and closed; the others still
+   * mount — one hanging server no longer holds every other one hostage.
+   */
+  connectTimeoutMs?: number
+}
+
+// Hard stop for a server whose pagination never ends (cursor loops).
+const MAX_LIST_PAGES = 100
+
+/**
+ * List every tool of a server, following `nextCursor`. Servers with hundreds
+ * of tools paginate; reading only the first page silently drops the rest.
+ */
+const listAllTools = async (client: Client): Promise<McpToolDescriptor[]> => {
+  const all: McpToolDescriptor[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const res = await client.listTools(cursor ? { cursor } : undefined)
+    all.push(...(res.tools as McpToolDescriptor[]))
+    cursor = res.nextCursor
+    if (!cursor) break
+  }
+  return all
+}
+
+class ConnectTimeoutError extends Error {}
+
+const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> => {
+  if (!(ms > 0)) return p
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    p.finally(() => clearTimeout(timer)),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new ConnectTimeoutError(`${label} timed out after ${ms} ms`)),
+        ms,
+      )
+    }),
+  ])
 }
 
 // Providers cap tool names at 64 chars (^[a-zA-Z0-9_-]{1,64}$). We enforce the
@@ -145,6 +190,7 @@ interface McpToolDescriptor {
   name: string
   description?: string
   inputSchema: unknown
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; title?: string }
 }
 
 interface ServerConnect {
@@ -307,60 +353,37 @@ const openConnection = async (
   log: NonNullable<ConnectMcpOptions['onLog']>,
 ): Promise<ServerConnect> => {
   let client: Client | undefined
+  let timedOut = false
+  const timeoutMs = cfg.connectTimeoutMs ?? opts.connectTimeoutMs ?? 30_000
+  const attempt = connectAndList(name, cfg, opts, log, (c) => {
+    client = c
+    // Created after the deadline already passed: nobody will ever use it.
+    if (timedOut) void c.close().catch(() => {})
+  })
+  // A handshake that completes after the deadline must not leave a live session behind.
+  attempt.then(
+    (r) => {
+      if (timedOut) void r.client?.close().catch(() => {})
+    },
+    () => {},
+  )
   try {
-    if (cfg.headers && cfg.getHeaders) {
-      throw new Error(`MCP server "${name}": specify either headers or getHeaders, not both`)
-    }
-    const headers = cfg.getHeaders ? await cfg.getHeaders() : cfg.headers
-    if (cfg.authProvider) {
-      if (headers && 'Authorization' in headers) {
-        log(
-          'warn',
-          `[mcp] ${name}: an explicit Authorization header shadows the OAuth token from authProvider`,
-        )
-      }
-      assertSecureOAuthUrl(cfg.url, name)
-      await refreshIfExpired(cfg.authProvider, cfg.url, cfg.fetch, log, name)
-    }
-    const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
-      requestInit: headers ? { headers } : undefined,
-      authProvider: cfg.authProvider,
-      fetch: cfg.fetch,
-      reconnectionOptions: { ...DEFAULT_RECONNECTION, ...cfg.reconnection },
-    })
-    // Without these, a dropped SSE stream or a transport-level protocol error
-    // is swallowed and the agent just stops getting results.
-    transport.onerror = (err) => log('warn', `[mcp] ${name}: transport error - ${err.message}`)
-    // info, not warn: an ordinary close() ends here too, and a routine
-    // teardown logged as a warning trains people to ignore warnings.
-    transport.onclose = () => log('info', `[mcp] ${name}: transport closed`)
-
-    client = new Client({
-      name: opts.clientName ?? 'agent-web',
-      version: opts.clientVersion ?? '0.0.0',
-    })
-    await client.connect(transport)
-
-    // Subscribe BEFORE the first list call: a server that mutates its tool set
-    // during init would otherwise lose the notification in the window between
-    // connect() and listTools().
-    if (opts.onToolsChanged) {
-      const notify = opts.onToolsChanged
-      client.setNotificationHandler(ToolListChangedNotificationSchema, () => notify(name))
-    }
-
-    const listed = (await client.listTools()).tools as McpToolDescriptor[]
-    return { name, client, listed }
+    return await withTimeout(attempt, timeoutMs, 'connect')
   } catch (err) {
+    if (err instanceof ConnectTimeoutError) timedOut = true
     // The client may be live even though we ended up here (listTools() failing
-    // after a successful connect). Close it, or the SSE stream leaks for the
-    // lifetime of the tab.
+    // after a successful connect, or the deadline passing mid-listing). Close
+    // it, or the SSE stream leaks for the lifetime of the tab.
     if (client) await client.close().catch(() => {})
     const needsAuthorization = err instanceof UnauthorizedError
     let message = err instanceof Error ? err.message : String(err)
     // Turn "TypeError: Failed to fetch" into the sentence the reader needs.
     // Only on the failure path, so the extra request costs nothing in normal use.
-    if (!needsAuthorization && isNetworkLevelFailure(err)) {
+    if (
+      !needsAuthorization &&
+      !(err instanceof ConnectTimeoutError) &&
+      isNetworkLevelFailure(err)
+    ) {
       const hint = await diagnoseMcpCors(cfg.url, cfg.fetch).catch(() => undefined)
       if (hint) message = `${message} - ${hint}`
     }
@@ -372,6 +395,59 @@ const openConnection = async (
     )
     return { name, error: message, needsAuthorization }
   }
+}
+
+const connectAndList = async (
+  name: string,
+  cfg: McpHttpServerConfig,
+  opts: ConnectMcpOptions,
+  log: NonNullable<ConnectMcpOptions['onLog']>,
+  onClient: (client: Client) => void,
+): Promise<ServerConnect> => {
+  if (cfg.headers && cfg.getHeaders) {
+    throw new Error(`MCP server "${name}": specify either headers or getHeaders, not both`)
+  }
+  const headers = cfg.getHeaders ? await cfg.getHeaders() : cfg.headers
+  if (cfg.authProvider) {
+    if (headers && 'Authorization' in headers) {
+      log(
+        'warn',
+        `[mcp] ${name}: an explicit Authorization header shadows the OAuth token from authProvider`,
+      )
+    }
+    assertSecureOAuthUrl(cfg.url, name)
+    await refreshIfExpired(cfg.authProvider, cfg.url, cfg.fetch, log, name)
+  }
+  const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
+    requestInit: headers ? { headers } : undefined,
+    authProvider: cfg.authProvider,
+    fetch: cfg.fetch,
+    reconnectionOptions: { ...DEFAULT_RECONNECTION, ...cfg.reconnection },
+  })
+  // Without these, a dropped SSE stream or a transport-level protocol error
+  // is swallowed and the agent just stops getting results.
+  transport.onerror = (err) => log('warn', `[mcp] ${name}: transport error - ${err.message}`)
+  // info, not warn: an ordinary close() ends here too, and a routine
+  // teardown logged as a warning trains people to ignore warnings.
+  transport.onclose = () => log('info', `[mcp] ${name}: transport closed`)
+
+  const client = new Client({
+    name: opts.clientName ?? 'agent-web',
+    version: opts.clientVersion ?? '0.0.0',
+  })
+  onClient(client)
+  await client.connect(transport)
+
+  // Subscribe BEFORE the first list call: a server that mutates its tool set
+  // during init would otherwise lose the notification in the window between
+  // connect() and listTools().
+  if (opts.onToolsChanged) {
+    const notify = opts.onToolsChanged
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => notify(name))
+  }
+
+  const listed = await listAllTools(client)
+  return { name, client, listed }
 }
 
 /**
@@ -428,6 +504,7 @@ export const connectMcpHttp = async (
         log('warn', `[mcp] ${name}: tool name "${prefixed}" already taken; mounted as "${key}"`)
       }
       const description = t.description ?? ''
+      const readOnly = t.annotations?.readOnlyHint === true
       tools[key] = dynamicTool({
         description,
         inputSchema: jsonSchema(t.inputSchema as Parameters<typeof jsonSchema>[0]),
@@ -447,7 +524,9 @@ export const connectMcpHttp = async (
           return flat
         },
       })
-      catalog.push({ name: key, description, server: name })
+      // The agent's consent gate lets read-only tools through in 'ask-writes'.
+      if (readOnly) (tools[key] as { readOnly?: boolean }).readOnly = true
+      catalog.push({ name: key, description, server: name, ...(readOnly ? { readOnly } : {}) })
       keys.push(key)
       mounted += 1
     }
@@ -481,8 +560,7 @@ export const connectMcpHttp = async (
     refreshServer: async (name: string) => {
       const client = clients.get(name)
       if (!client) throw new Error(`MCP server "${name}" is not connected`)
-      const listed = (await client.listTools()).tools as McpToolDescriptor[]
-      mountTools(name, client, listed)
+      mountTools(name, client, await listAllTools(client))
     },
     close: async () => {
       await Promise.allSettled([...clients.values()].map((c) => c.close()))
