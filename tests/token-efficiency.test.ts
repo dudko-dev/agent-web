@@ -161,3 +161,27 @@ test('promptCaching: false → no rolling breakpoint in the tool loop', async ()
     assert.ok(!JSON.stringify(call.options.prompt).includes('cacheControl'))
   }
 })
+
+test('createToolResultClearer: works by position, so repeated tool call ids are fine', () => {
+  const clear = createToolResultClearer({ triggerTokens: 30, keep: 1 })
+  const result = (value: string) =>
+    ({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_0',
+          toolName: 'read',
+          output: { type: 'text', value },
+        },
+      ],
+    }) as never
+  const big = 'x'.repeat(200)
+  const out = clear([result(big), result(big), result(big)]) as unknown as {
+    content: RawPart[]
+  }[]
+  const values = out.map((m) => String(m.content[0].output?.value))
+  assert.match(values[0], /cleared/)
+  assert.match(values[1], /cleared/)
+  assert.equal(values[2], big)
+})

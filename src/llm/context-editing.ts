@@ -35,18 +35,14 @@ const estimate = (messages: ModelMessage[]): number => {
   }
 }
 
-type ToolResultPart = {
-  type: 'tool-result'
-  toolCallId: string
-  toolName: string
-  output: unknown
-}
-
-const resultParts = (messages: ModelMessage[]): ToolResultPart[] =>
-  messages.flatMap((m) =>
+// A result's position in the conversation ("message:part"). The loop only
+// appends, so positions are stable — unlike tool call ids, which some servers
+// repeat across rounds.
+const positionsOf = (messages: ModelMessage[]): string[] =>
+  messages.flatMap((m, i) =>
     m.role === 'tool' && Array.isArray(m.content)
-      ? (m.content as { type: string }[]).filter(
-          (p): p is ToolResultPart => p.type === 'tool-result',
+      ? (m.content as { type: string }[]).flatMap((p, j) =>
+          p.type === 'tool-result' ? [`${i}:${j}`] : [],
         )
       : [],
   )
@@ -65,12 +61,12 @@ export const createToolResultClearer = (
   const apply = (messages: ModelMessage[]): ModelMessage[] =>
     cleared.size === 0
       ? messages
-      : messages.map((m) =>
+      : messages.map((m, i) =>
           m.role === 'tool' && Array.isArray(m.content)
             ? {
                 ...m,
-                content: m.content.map((p) =>
-                  p.type === 'tool-result' && cleared.has(p.toolCallId)
+                content: m.content.map((p, j) =>
+                  p.type === 'tool-result' && cleared.has(`${i}:${j}`)
                     ? { ...p, output: { type: 'text' as const, value: STUB(p.toolName) } }
                     : p,
                 ),
@@ -82,12 +78,11 @@ export const createToolResultClearer = (
     let edited = apply(messages)
     const before = estimate(edited)
     if (before <= opts.triggerTokens) return edited
-    const parts = resultParts(messages)
-    const candidates = parts.slice(0, Math.max(0, parts.length - keep))
+    const positions = positionsOf(messages)
     let added = 0
-    for (const p of candidates) {
-      if (!cleared.has(p.toolCallId)) {
-        cleared.add(p.toolCallId)
+    for (const pos of positions.slice(0, Math.max(0, positions.length - keep))) {
+      if (!cleared.has(pos)) {
+        cleared.add(pos)
         added += 1
       }
     }
