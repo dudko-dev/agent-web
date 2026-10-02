@@ -100,7 +100,25 @@ export const executeStep = async (
     temperature: ctx.config.temperature,
     abortSignal: ctx.signal,
     timeoutMs: ctx.config.chatTimeoutMs,
+    caching: ctx.caching,
+    ...(ctx.config.compaction.clearToolResultsAfterTokens > 0
+      ? {
+          clearToolResults: {
+            triggerTokens: ctx.config.compaction.clearToolResultsAfterTokens,
+            keep: ctx.config.compaction.keepToolResults,
+          },
+        }
+      : {}),
     callbacks: {
+      onToolResultsCleared: (info) => {
+        ctx.log.info(`cleared ${info.cleared} stale tool result(s) from the step's context`)
+        ctx.emit({
+          type: 'context.compacted',
+          scope: 'tool-results',
+          beforeTokens: info.beforeTokens,
+          afterTokens: info.afterTokens,
+        })
+      },
       onTextDelta: (delta) => ctx.emit({ type: 'step.text-delta', step, delta }),
       onReasoningDelta: (delta) => ctx.emit({ type: 'step.reasoning-delta', step, delta }),
       onToolCall: (name, input) => {

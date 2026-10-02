@@ -25,6 +25,14 @@ export interface CompactionConfig {
   summaryMaxTokens?: number
   /** Cap on ONE tool result as the model sees it, in chars (default 20 000; 0 = no cap). */
   maxToolOutputChars?: number
+  /**
+   * Inside one step's tool loop: once its context passes this many tokens,
+   * replace the oldest tool results with one-line stubs (context editing;
+   * default: a quarter of the window; 0 = never).
+   */
+  clearToolResultsAfterTokens?: number
+  /** Most recent tool results kept verbatim when clearing (default 3). */
+  keepToolResults?: number
 }
 
 export interface ResolvedCompaction {
@@ -35,6 +43,8 @@ export interface ResolvedCompaction {
   keepRecentSteps: number
   summaryMaxTokens: number
   maxToolOutputChars: number
+  clearToolResultsAfterTokens: number
+  keepToolResults: number
 }
 
 export const resolveCompaction = (c: CompactionConfig | undefined): ResolvedCompaction => {
@@ -47,6 +57,9 @@ export const resolveCompaction = (c: CompactionConfig | undefined): ResolvedComp
     keepRecentSteps: c?.keepRecentSteps ?? 3,
     summaryMaxTokens: c?.summaryMaxTokens ?? 1024,
     maxToolOutputChars: c?.maxToolOutputChars ?? 20_000,
+    clearToolResultsAfterTokens:
+      c?.clearToolResultsAfterTokens ?? Math.floor(contextWindowTokens / 4),
+    keepToolResults: c?.keepToolResults ?? 3,
   }
 }
 

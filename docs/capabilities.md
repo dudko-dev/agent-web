@@ -10,6 +10,7 @@ implements the same features with the same field and event names.
 - [Token limits and step caps](#token-limits-and-step-caps)
 - [Context management and compaction](#context-management-and-compaction)
 - [Prompt caching](#prompt-caching)
+- [Token efficiency](#token-efficiency)
 - [Skills](#skills)
 - [Tool consent and autopilot](#tool-consent-and-autopilot)
 - [Large tool catalogues (several MCP servers)](#large-tool-catalogues-several-mcp-servers)
@@ -109,6 +110,8 @@ createAgent({
     keepRecentSteps: 3,          // run steps kept verbatim
     summaryMaxTokens: 1024,
     maxToolOutputChars: 20_000,  // per tool result, as the MODEL sees it
+    clearToolResultsAfterTokens: 32_000, // default: a quarter of the window; 0 = never
+    keepToolResults: 3,          // newest tool results kept verbatim when clearing
   },
 })
 await agent.compact()           // manual: summarise the stored transcript now
@@ -121,9 +124,16 @@ await agent.compact()           // manual: summarise the stored transcript now
 - **Tool results** — every tool's model-facing output is capped at
   `maxToolOutputChars` (via the AI SDK `toModelOutput`); events and the trace
   still get the full result.
+- **Stale tool results inside a step** (context editing, like Anthropic's
+  `clear_tool_uses` and Claude Code's micro-compaction) — once a step's tool
+  loop grows past `clearToolResultsAfterTokens`, the oldest results are replaced
+  with a one-line stub ("… result cleared — call the tool again if you still
+  need it"), keeping the newest `keepToolResults`. The calls stay, so the model
+  knows what it did. Clearing is sticky, so the cached prefix doesn't flip back.
 
 Each compaction emits `context.compacted { scope, beforeTokens, afterTokens }`
-and a `usage` event with phase `'compact'`. Without `compaction`, the legacy
+(`scope`: `'history' | 'trace' | 'tool-results'`) and, when a model summarised,
+a `usage` event with phase `'compact'`. Without `compaction`, the legacy
 `compressAfterChars` post-run compression applies as before.
 
 ## Prompt caching
@@ -134,10 +144,41 @@ and a `usage` event with phase `'compact'`. Without `compaction`, the legacy
   parts go to the user prompt — OpenAI's and Gemini's automatic prefix caches hit;
 - the system message carries an Anthropic `cacheControl` breakpoint
   (`promptCaching: { ttl: '1h' }` for the longer TTL);
-- OpenAI calls get a `promptCacheKey` (`<clientName>:<stage>`, or your `key`).
+- OpenAI calls get a `promptCacheKey` (`<clientName>:<stage>`, or your `key`);
+- inside a step's tool loop, a second breakpoint **rolls to the newest message**
+  every round, so each round reads all earlier rounds from the cache and writes
+  only the new tail (older message breakpoints are removed — a request carries
+  at most two, Anthropic allows four);
+- tools are sent **sorted by name**, so the tool list — the head of every cached
+  prefix — is identical however the MCP servers happened to connect.
 
 Cache reads/writes show up as `usage.cachedInputTokens` / `cacheWriteTokens`.
 `promptCaching: false` sends plain system strings.
+
+## Token efficiency
+
+The agent follows the practices coding agents (Claude Code, the Claude and
+GitHub Copilot extensions) use to keep a long session cheap:
+
+| Practice | How the agent does it | Knob |
+| --- | --- | --- |
+| Stable, cacheable prefix | system prompts hold only run-stable content; tools sorted by name; dynamic state goes last | `promptCaching` |
+| Cache the growing loop | rolling Anthropic breakpoint on the newest message; OpenAI `promptCacheKey` per stage | `promptCaching: { ttl }` |
+| Don't send every tool | above `toolSearchThreshold` the model gets a compact catalogue and `find_tools` (deferred tools) | `toolSelectionStrategy`, `toolSearchThreshold` |
+| Load instructions on demand | skills: only name + description in the prompt, the body on activation | `skills` |
+| Cap tool output | per result, as the model sees it (events keep the full value) | `compaction.maxToolOutputChars` |
+| Clear stale tool results | oldest results in a long loop become stubs | `compaction.clearToolResultsAfterTokens` |
+| Auto-compact | history and run trace summarised past a threshold; `agent.compact()` on demand | `compaction` |
+| Isolate side quests | subagents run in their own context; only their answer returns | `createSubagentTool` |
+| Pass results, not transcripts | later steps and the answer get step summaries + clipped findings, not raw loops | — |
+| Bound everything | token caps per run / per kind, tool-call and plan-step caps | `limits`, `maxToolCalls`, `maxPlanSteps` |
+| Think only where it pays | thinking per stage (e.g. on for the planner, off for the synthesizer) | `stageThinking` |
+| Cheaper model for summaries | compaction and the answer use the `synthesizer` stage model | `synthesizer` |
+| Small images | the React composer downsizes images before sending (≈1.15 MP), the size providers bill for | `<AgentComposer imageMaxDimension>` |
+
+The usage events break every call down by kind (input / output / thinking /
+cache read / cache write) and by phase, so the effect is measurable:
+`cachedInputTokens / inputTokens` is the cache hit rate.
 
 ## Skills
 

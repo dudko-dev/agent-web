@@ -9,9 +9,15 @@ import {
   type ToolSet,
 } from 'ai'
 import { addUsage, BLOCKER, emptyUsage, type IToolCall, type IUsage } from '../agent/loop-types.js'
+import { withRollingBreakpoint, type ResolvedCaching } from '../caching.js'
 import { parseExecutorResponse } from '../parse.js'
 import type { ProviderOptionsMap, ThinkingLevel } from '../thinking.js'
 import { dispatch } from '../tools/prompted.js'
+import {
+  createToolResultClearer,
+  type ClearedInfo,
+  type ToolResultClearing,
+} from './context-editing.js'
 import { clip, normalizeUsage, promptOf, timeoutSignal } from './util.js'
 
 export interface ToolLoopCallbacks {
@@ -20,6 +26,8 @@ export interface ToolLoopCallbacks {
   onReasoningDelta?: (delta: string) => void
   onToolCall?: (name: string, input: unknown) => void
   onToolResult?: (name: string, output: unknown, ok: boolean) => void
+  /** Older tool results were replaced with stubs (see `clearToolResults`). */
+  onToolResultsCleared?: (info: ClearedInfo) => void
 }
 
 export interface ToolLoopOptions {
@@ -55,6 +63,13 @@ export interface ToolLoopOptions {
   providerOptions?: ProviderOptionsMap
   abortSignal?: AbortSignal
   timeoutMs?: number
+  /**
+   * Prompt caching: with it enabled, every round moves a cache breakpoint to
+   * the newest message, so the rounds before it are read from the cache.
+   */
+  caching?: ResolvedCaching
+  /** Clear the oldest tool results once the loop's context grows past a threshold. */
+  clearToolResults?: ToolResultClearing
   callbacks?: ToolLoopCallbacks
 }
 
@@ -108,14 +123,31 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
   }
   const initialActive = activeOf(opts)
   const dynamic = typeof opts.activeTools === 'function'
+  const caching = opts.caching?.enabled ? opts.caching : undefined
+  const clear = opts.clearToolResults
+    ? createToolResultClearer(opts.clearToolResults, opts.callbacks?.onToolResultsCleared)
+    : undefined
+  const editMessages = caching || clear
 
   const result = streamText({
     model,
     tools: opts.tools,
     ...(initialActive ? { activeTools: initialActive } : {}),
-    // Re-read the active set before every step so tools activated mid-call
-    // (find_tools) become callable on the next step.
-    ...(dynamic ? { prepareStep: () => ({ activeTools: activeOf(opts) }) } : {}),
+    // Before every round: re-read the active set so tools activated mid-call
+    // (find_tools) become callable; clear stale tool results; move the cache
+    // breakpoint to the newest message.
+    ...(dynamic || editMessages
+      ? {
+          prepareStep: ({ messages }: { messages: ModelMessage[] }) => {
+            let next = clear ? clear(messages) : messages
+            if (caching) next = withRollingBreakpoint(next, caching)
+            return {
+              ...(dynamic ? { activeTools: activeOf(opts) } : {}),
+              ...(editMessages ? { messages: next } : {}),
+            }
+          },
+        }
+      : {}),
     stopWhen,
     ...callExtras(opts),
     ...promptOf(opts),
@@ -241,7 +273,7 @@ const runPrompted = async (
     const result = await generateText({
       model,
       ...callExtras(opts),
-      messages,
+      messages: opts.caching ? withRollingBreakpoint(messages, opts.caching) : messages,
       abortSignal: signal,
     })
     usage = addUsage(usage, normalizeUsage(result.usage))

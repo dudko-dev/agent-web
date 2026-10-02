@@ -39,7 +39,8 @@ export type AgentEvent =
   /** Older context was summarised to fit the window. */
   | {
       type: 'context.compacted'
-      scope: 'history' | 'trace'
+      /** history = stored transcript; trace = the run's done steps; tool-results = stale results inside a step's tool loop. */
+      scope: 'history' | 'trace' | 'tool-results'
       beforeTokens: number
       afterTokens: number
     }
