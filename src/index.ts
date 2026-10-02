@@ -25,8 +25,17 @@ export type {
 } from './subagent/protocol.js'
 
 // ── Images, files ────────────────────────────────────────────────────────────
-export { ImagesNotSupportedError, toImagePart, isImageRefusal } from './images.js'
-export type { RunImage } from './images.js'
+export {
+  AttachmentsNotSupportedError,
+  ImagesNotSupportedError,
+  attachmentKind,
+  isAttachmentRefusal,
+  isImageRefusal,
+  mediaTypeOf,
+  toFilePart,
+  toImagePart,
+} from './images.js'
+export type { AttachmentKind, RunFile, RunImage } from './images.js'
 export {
   VirtualFileSystem,
   normalizePath,
@@ -95,6 +104,7 @@ export {
   supportsStructuredOutput,
   directBrowserOk,
   supportsImages,
+  supportsPdf,
 } from './providers/capabilities.js'
 export { isDirectModel, isProviderSpec } from './providers/types.js'
 export type {

@@ -2,7 +2,11 @@ import 'fake-indexeddb/auto'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  AttachmentsNotSupportedError,
+  attachmentKind,
   createAgent,
+  supportsPdf,
+  toFilePart,
   createFileTools,
   ImagesNotSupportedError,
   normalizePath,
@@ -189,6 +193,74 @@ test('memory keeps a text note of the images, not their bytes', async () => {
   const agent = await createAgent({ model, memory, sessionId: 's', vision: true })
   await agent.run('hi', { images: [{ data: PNG, name: 'cat.png' }] })
   const stored = await memory.load('s')
-  assert.match(stored[0].content, /\[attached image\(s\): cat.png\]/)
+  assert.match(stored[0].content, /\[attached: cat.png\]/)
   assert.doesNotMatch(stored[0].content, /base64/)
+})
+
+// ── PDFs, other files, URLs ─────────────────────────────────────────────────
+
+const PDF = 'data:application/pdf;base64,JVBERi0xLjQKJcfsj6IK'
+
+test('attachments: kind and part by media type — image part, PDF file part, URL passthrough', () => {
+  assert.equal(attachmentKind({ data: PNG }), 'image')
+  assert.equal(attachmentKind({ data: PDF }), 'pdf')
+  assert.equal(attachmentKind({ data: 'https://example.com/report.pdf' }), 'pdf')
+  assert.equal(attachmentKind({ data: 'aGk=', mediaType: 'text/csv' }), 'file')
+  assert.deepEqual(toFilePart({ data: PDF, name: 'r.pdf' }), {
+    type: 'file',
+    data: 'JVBERi0xLjQKJcfsj6IK',
+    mediaType: 'application/pdf',
+    filename: 'r.pdf',
+  })
+  const url = toFilePart({ data: 'https://example.com/cat.png' }) as {
+    type: string
+    data: URL
+    mediaType: string
+  }
+  assert.equal(url.type, 'file')
+  assert.equal(url.mediaType, 'image/png')
+  assert.ok(url.data instanceof URL)
+  assert.equal(url.data.href, 'https://example.com/cat.png')
+})
+
+test('supportsPdf: Gemini/Claude/OpenAI read PDFs; local and text-only models do not', () => {
+  assert.equal(supportsPdf({ provider: 'google.generative-ai', modelId: 'gemini-3.5-flash' }), true)
+  assert.equal(supportsPdf({ provider: 'anthropic.messages', modelId: 'claude-haiku-4-5' }), true)
+  assert.equal(supportsPdf({ provider: 'web-llm', modelId: 'x' }), false)
+  assert.equal(supportsPdf({ provider: 'xai.chat', modelId: 'grok-4' }), undefined)
+})
+
+test('a PDF reaches the model as a file part; a URL stays a URL', async () => {
+  const { model, calls } = scriptedModel((info) =>
+    stageOf(info) === 'planner'
+      ? { text: JSON.stringify({ thought: 't', steps: [{ description: 'Read it' }] }) }
+      : { text: 'It is a report.' },
+  )
+  const agent = await createAgent({ model, inputs: { pdf: true, images: true } })
+  await agent.run('summarise the attachments', {
+    files: [{ data: PDF, name: 'r.pdf' }, { data: 'https://example.com/cat.png' }],
+  })
+  const parts = imageParts(calls.find((c) => stageOf(c) === 'planner')!) as {
+    type: string
+    mediaType: string
+    data: unknown
+  }[]
+  assert.deepEqual(
+    parts.map((p) => p.mediaType),
+    ['application/pdf', 'image/png'],
+  )
+  // The provider receives the link itself, not downloaded bytes.
+  const link = parts[1].data as { type: string; url: URL }
+  assert.equal(link.type, 'url')
+  assert.equal(String(link.url), 'https://example.com/cat.png')
+})
+
+test('a PDF for a model that cannot read PDFs: a clear error that suggests converting it', async () => {
+  const { model, calls } = scriptedModel(() => ({ text: 'unused' }))
+  const agent = await createAgent({ model, inputs: { pdf: false } })
+  assert.equal(agent.capabilities.pdf, false)
+  const result = await agent.run('read this', { files: [{ data: PDF, name: 'r.pdf' }] })
+  assert.equal(calls.length, 0)
+  assert.match(result.final, /can't take PDF files\. Convert the PDF to text first/)
+  assert.equal(new AttachmentsNotSupportedError('m', 'pdf').kind, 'pdf')
 })

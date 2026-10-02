@@ -14,7 +14,7 @@ implements the same features with the same field and event names.
 - [Tool consent and autopilot](#tool-consent-and-autopilot)
 - [Large tool catalogues (several MCP servers)](#large-tool-catalogues-several-mcp-servers)
 - [Subagents (in-process or Web Workers)](#subagents-in-process-or-web-workers)
-- [Images in, and models that can't see them](#images-in-and-models-that-cant-see-them)
+- [Images, PDFs, files and URLs in](#images-pdfs-files-and-urls-in--and-models-that-cant-take-them)
 - [Virtual file system](#virtual-file-system)
 - [Autonomy](#autonomy)
 - [Event reference](#event-reference)
@@ -290,32 +290,51 @@ serveSubagentWorker({
 - The protocol is plain structured-clone messages over any `MessageEndpoint`
   (a `Worker`, a worker's `self`, a `MessagePort`).
 
-## Images in, and models that can't see them
+## Images, PDFs, files and URLs in — and models that can't take them
 
 ```ts
-await agent.run('What is wrong on this screenshot?', {
-  images: [{ data: 'data:image/png;base64,…', name: 'screen.png' }], // or base64 + mediaType, or bytes
+await agent.run('What is wrong on this screenshot, and does the spec agree?', {
+  images: [{ data: 'data:image/png;base64,…', name: 'screen.png' }],
+  files: [
+    { data: pdfBytes, mediaType: 'application/pdf', name: 'spec.pdf' },
+    { data: 'https://example.com/diagram.png' }, // a link: sent as a URL
+  ],
 })
 ```
 
-Images reach the planner, the executor (every step) and the synthesizer as
-image parts of the user message. Whether a model can take them is
-`agent.capabilities.images`:
+Attachments reach the planner, the executor (every step) and the synthesizer as
+file parts of the user message (`toFilePart`). Data can be bytes, base64, a
+data URL, or an **http(s) URL** — providers that accept links (Gemini, Claude,
+OpenAI) fetch it themselves; for the rest the AI SDK downloads it (from a
+browser: subject to CORS). The kind comes from the media type
+(`attachmentKind`): `image`, `pdf`, or `file`.
 
-- `false` — local / prompted-mode models (WebLLM, built-in AI), DeepSeek and
-  text-only families (`gpt-3.5`, `o1-mini`, …), or `vision: false` in the
-  config. A run with images then **ends immediately** — no tokens spent — with
-  an `error` event (phase `run`) and `RunResult.final` set to
-  `ImagesNotSupportedError`'s message: *The model "…" can't take images (…).
-  Remove the image, or switch to a vision-capable model…*
-- `true` — Gemini, Claude, GPT-4o/4.1/5, Grok (or `vision: true`).
-- `undefined` — unknown (an OpenAI-compatible server): the run tries, and a
-  provider refusal is turned into the same `ImagesNotSupportedError` message
-  ("the provider said: …") instead of a raw API error.
+What the model takes is `agent.capabilities` — `{ images, pdf, files }`, each
+`true` / `false` / `undefined`:
 
-A UI should check `agent.capabilities.images` before accepting a paste
-(`@dudko.dev/agent-web-react`'s composer does). Memory stores a text note of
-the images ("[attached image(s): screen.png]"), never their bytes.
+| | images | pdf | other files |
+| --- | --- | --- | --- |
+| Gemini, Claude, OpenAI GPT-4o/4.1/5 | ✓ | ✓ | tried |
+| xAI Grok | ✓ | tried | tried |
+| DeepSeek, `gpt-3.5`, `o1-mini`… | ✗ | ✗ | tried |
+| Local / prompted mode (WebLLM, built-in AI) | ✗ | ✗ | ✗ |
+| OpenAI-compatible servers | tried | tried | tried |
+
+Override with `vision` (images) or `inputs: { images, pdf, files }`.
+
+- **Known ✗** — the run ends immediately, no tokens spent, with an `error`
+  event (phase `run`) and `RunResult.final` set to a message the user can act
+  on: *The model "…" can't take PDF files. Convert the PDF to text first (e.g.
+  PDF → Markdown), or switch to a model that reads PDFs such as Gemini, Claude
+  or GPT-4o/GPT-5.* (`AttachmentsNotSupportedError`; `ImagesNotSupportedError`
+  for images.)
+- **Tried** — a provider refusal is turned into the same message ("the provider
+  said: …") instead of a raw API error.
+
+A UI should check `agent.capabilities` before accepting a paste or an upload
+(`@dudko.dev/agent-web-react`'s composer does, and can convert a PDF to
+Markdown first). Memory stores a text note of the attachments ("[attached:
+screen.png, spec.pdf]"), never their bytes.
 
 ## Virtual file system
 

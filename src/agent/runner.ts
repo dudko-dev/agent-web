@@ -45,8 +45,16 @@ import { createPlan } from './planner.js'
 import { decideReplan } from './replanner.js'
 import { synthesizeAnswer } from './synthesizer.js'
 import { createLogger } from '../logger.js'
-import { ImagesNotSupportedError, modelLabel, type RunImage } from '../images.js'
-import { supportsImages } from '../providers/capabilities.js'
+import {
+  AttachmentsNotSupportedError,
+  attachmentKind,
+  modelLabel,
+  unsupportedAttachment,
+  type AttachmentKind,
+  type RunFile,
+  type RunImage,
+} from '../images.js'
+import { supportsImages, supportsPdf } from '../providers/capabilities.js'
 
 export interface RunOptions {
   onEvent?: AgentEventHandler
@@ -60,6 +68,12 @@ export interface RunOptions {
    * ImagesNotSupportedError's message (see `capabilities.images`).
    */
   images?: RunImage[]
+  /**
+   * Other attachments: PDFs and files the provider reads natively, as data or
+   * as an http(s) URL. Same rules as `images`, per kind (`capabilities.pdf`,
+   * `capabilities.files`).
+   */
+  files?: RunFile[]
 }
 
 export interface RunResult {
@@ -107,10 +121,15 @@ export interface Agent {
   /** Configured skills (name + description). */
   readonly skills: { name: string; description: string }[]
   /**
-   * What the executor model can take: `images` is true / false, or undefined
-   * when unknown (the run tries, and a provider refusal becomes a clear error).
+   * What the executor model can take, per attachment kind: true / false, or
+   * undefined when unknown (the run tries, and a provider refusal becomes a
+   * clear error).
    */
-  readonly capabilities: { images: boolean | undefined }
+  readonly capabilities: {
+    images: boolean | undefined
+    pdf: boolean | undefined
+    files: boolean | undefined
+  }
   /** The resolved models, for hosts that want to reuse them (e.g. warm-up). */
   readonly models: {
     planner: LanguageModel
@@ -221,8 +240,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   const caching = resolveCaching(config.promptCaching)
   // The prompted path is text-only; otherwise trust the host's `vision`, then
   // what is known about the model.
-  const imagesOk: boolean | undefined =
-    config.vision ?? (executorMode === 'prompted' ? false : supportsImages(executorModel))
+  const textOnly = executorMode === 'prompted'
+  const accepts: Record<AttachmentKind, boolean | undefined> = {
+    image:
+      config.inputs?.images ?? config.vision ?? (textOnly ? false : supportsImages(executorModel)),
+    pdf: config.inputs?.pdf ?? (textOnly ? false : supportsPdf(executorModel)),
+    file: config.inputs?.files ?? (textOnly ? false : undefined),
+  }
   const approval = createApprovalState(config.toolApproval)
   const log = createLogger(cfg.logLevel, config.logger)
   log.info(
@@ -326,12 +350,14 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     }
 
     emit({ type: 'run.start', goal: text })
-    const images = opts.images ?? []
-    if (images.length > 0 && imagesOk === false) {
+    const images = [...(opts.images ?? []), ...(opts.files ?? [])]
+    const refused = images.map(attachmentKind).find((kind) => accepts[kind] === false)
+    if (refused) {
       // Fail before spending a single token, with a message a user can act on.
-      const err = new ImagesNotSupportedError(
+      const err = unsupportedAttachment(
         modelLabel(executorModel),
-        executorMode === 'prompted' ? 'it runs in the text-only prompted tool mode' : undefined,
+        refused,
+        textOnly ? 'it runs in the text-only prompted tool mode' : undefined,
       )
       log.warn(err.message)
       emit({ type: 'error', phase: 'run', error: err.message })
@@ -409,7 +435,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     await remember({
       role: 'user',
       content: images.length
-        ? `${text}\n[attached image(s): ${images.map((img, i) => img.name ?? `image ${i + 1}`).join(', ')}]`
+        ? `${text}\n[attached: ${images.map((f, i) => f.name ?? `${attachmentKind(f)} ${i + 1}`).join(', ')}]`
         : text,
     })
     log.info('run:', text, images.length ? `(+${images.length} image(s))` : '')
@@ -494,8 +520,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           // A user abort surfaces as a thrown AbortError — that is a stop, not
           // a step failure.
           if (isAborted()) return stop()
-          // A model that refuses the images can't do any step: end the run.
-          if (err instanceof ImagesNotSupportedError) throw err
+          // A model that refuses the attachments can't do any step: end the run.
+          if (err instanceof AttachmentsNotSupportedError) throw err
           emit({ type: 'error', phase: 'execute', error: errMessage(err) })
           stepResult = { step, summary: errMessage(err), toolCalls: [], blocked: true }
         } finally {
@@ -617,7 +643,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           if (synth.text) summary = synth.text
         } catch (err) {
           if (isAborted()) return stop()
-          if (err instanceof ImagesNotSupportedError) throw err
+          if (err instanceof AttachmentsNotSupportedError) throw err
           /* keep the default */
         }
       }
@@ -711,7 +737,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     listTools: () => catalog.map((e) => ({ ...e })),
     toolStrategy: strategy,
     skills: skills.map((s) => ({ name: s.name, description: s.description })),
-    capabilities: { images: imagesOk },
+    capabilities: { images: accepts.image, pdf: accepts.pdf, files: accepts.file },
     models: { planner: plannerModel, executor: executorModel, synthesizer: synthesizerModel },
   }
 }

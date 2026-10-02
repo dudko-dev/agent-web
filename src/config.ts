@@ -121,6 +121,8 @@ export interface BrowserAgentConfig {
    * refusal is reported as ImagesNotSupportedError.
    */
   vision?: boolean
+  /** Per-kind override of what the model takes as attachments (`images` wins over `vision`). */
+  inputs?: { images?: boolean; pdf?: boolean; files?: boolean }
   /** Provider prompt caching (default true): stable system prefixes + Anthropic breakpoints. */
   promptCaching?: PromptCachingSetting
   /** Context compaction (auto + manual `agent.compact()`); see CompactionConfig. */

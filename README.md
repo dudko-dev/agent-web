@@ -21,7 +21,8 @@ budgets), **token limits** (input / output / thinking / total per run),
 **context compaction** (automatic and `agent.compact()`), **prompt caching**,
 **skills** (SKILL.md bundles), **tool consent modes with an autopilot switch**,
 **tool search** for catalogues of hundreds of MCP tools, **subagents** in
-Web Workers, **image input** (with a clear error for models that can't see),
+Web Workers, **image / PDF / file / URL input** (with a clear error for models
+that can't take them),
 and a **virtual file system** in IndexedDB with `fs_*` tools — see
 [docs/capabilities.md](docs/capabilities.md).
 
@@ -333,7 +334,7 @@ Web Worker served by `serveSubagentWorker()`. Details, defaults and events:
 | `maxToolCalls` / `maxPlanSteps` | ∞ / 8 | tool calls per run / steps per plan |
 | `compaction` | auto, ½ of 128k | `{ auto, contextWindowTokens, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` |
 | `promptCaching` | `true` | stable system prefixes, Anthropic breakpoints, OpenAI cache key |
-| `vision` | inferred | whether the model takes images (`run(goal, { images })`); see `agent.capabilities` |
+| `vision` / `inputs` | inferred | what the model takes as attachments (`run(goal, { images, files })`); see `agent.capabilities` |
 | `systemPrompt` | — | prepended to every phase |
 | `describeState` | — | serialize world state into prompt context |
 | `memory` | — | `ContextStore` (`IndexedDBStore` / `MemoryStore`); recent turns are read back into the planner prompt |

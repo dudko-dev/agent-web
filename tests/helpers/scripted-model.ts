@@ -81,6 +81,8 @@ export const scriptedModel = (route: (info: CallInfo) => Reply) => {
   const model = new MockLanguageModelV4({
     provider: 'scripted',
     modelId: 'scripted-1',
+    // Accept links as-is (like Gemini / Claude), so the SDK never downloads them.
+    supportedUrls: { '*/*': [/^https?:\/\//] },
     doGenerate: async (options: Record<string, unknown>) => {
       const info = infoOf(options)
       calls.push(info)

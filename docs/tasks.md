@@ -102,8 +102,9 @@ Status of the work. See [design.md](./design.md) for the architecture,
       (`serveSubagentWorker`), proxied host tools under the parent's consent gate.
 - [x] **Autonomy** — prompts never ask the user; questions that need data are
       planned as tool work.
-- [x] **Images** — `run(goal, { images })` to vision models; `supportsImages`,
-      `agent.capabilities.images`, `ImagesNotSupportedError` before any call
-      (text-only / prompted models) or from a provider refusal.
+- [x] **Attachments** — `run(goal, { images, files })`: images, PDFs, files,
+      http(s) URLs as file parts; `agent.capabilities` per kind;
+      `AttachmentsNotSupportedError` before any call (known text-only models)
+      or from a provider refusal.
 - [x] **Virtual file system** — `VirtualFileSystem` (IndexedDB / memory) +
       `createFileTools` (`fs_list` / `fs_read` / `fs_write` / `fs_delete`).

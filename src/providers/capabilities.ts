@@ -42,6 +42,8 @@ const LOCAL_RE = /web-?llm|mlc|browser-ai|transformers|built-?in/i
 const TEXT_ONLY_MODEL_RE =
   /gpt-3\.5|o1-mini|o3-mini|deepseek|text-(davinci|embedding)|embedding|babbage|davinci|codestral/i
 const VISION_PROVIDER_RE = /^(google|anthropic|openai|azure|xai|vertex|bedrock|gemini)/i
+// Providers that read PDFs natively (as file parts).
+const PDF_PROVIDER_RE = /^(google|anthropic|openai|azure|vertex|bedrock|gemini)/i
 
 /**
  * Whether a model accepts image input: `true` (expected to), `false` (known
@@ -62,4 +64,19 @@ export const supportsImages = (model: unknown): boolean | undefined => {
   if (LOCAL_RE.test(provider)) return false
   if (/deepseek/i.test(provider) || TEXT_ONLY_MODEL_RE.test(id)) return false
   return VISION_PROVIDER_RE.test(provider) ? true : undefined
+}
+
+/**
+ * Whether a model reads PDF files natively: `false` for local runtimes and
+ * text-only families, `true` for Gemini, Claude and OpenAI's vision models,
+ * `undefined` when unknown (tried; a refusal becomes a clear error).
+ */
+export const supportsPdf = (model: unknown): boolean | undefined => {
+  const vision = supportsImages(model)
+  if (vision === false) return false
+  const provider =
+    typeof model === 'string'
+      ? (model.split('/')[0] ?? '')
+      : String((model as { provider?: unknown } | undefined)?.provider ?? '')
+  return PDF_PROVIDER_RE.test(provider) ? true : undefined
 }

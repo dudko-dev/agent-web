@@ -17,11 +17,13 @@ import {
 import type { AgentToolSet } from '../tools/types.js'
 import type { AgentLogger } from '../logger.js'
 import {
-  ImagesNotSupportedError,
-  isImageRefusal,
+  AttachmentsNotSupportedError,
+  attachmentKind,
+  isAttachmentRefusal,
   modelLabel,
-  toImagePart,
-  type RunImage,
+  toFilePart,
+  unsupportedAttachment,
+  type RunFile,
 } from '../images.js'
 import type { IPlanStep, IUsage } from './loop-types.js'
 
@@ -73,8 +75,8 @@ export interface AgentContext {
   overBudget?: (extra: IUsage) => boolean
   /** Tracks the step being executed (tools read it via their run context). */
   setCurrentStep?: (step: IPlanStep | undefined) => void
-  /** Images the user sent with this run's goal (vision-capable models only). */
-  images?: RunImage[]
+  /** Images / PDFs / files the user sent with this run's goal. */
+  images?: RunFile[]
 }
 
 /**
@@ -90,26 +92,32 @@ export const promptFor = (
         messages: [
           {
             role: 'user',
-            content: [{ type: 'text', text: prompt }, ...ctx.images.map(toImagePart)],
+            content: [{ type: 'text', text: prompt }, ...ctx.images.map(toFilePart)],
           },
         ],
       }
     : { prompt }
 
 /**
- * When a run carries images and a model call failed in a way that reads like a
- * refusal of image input, the clear error to raise instead (else undefined).
+ * When a run carries attachments and a model call failed in a way that reads
+ * like a refusal of them, the clear error to raise instead (else undefined).
  */
 export const imageRefusal = (
   ctx: AgentContext,
   err: unknown,
   model: LanguageModel,
-): ImagesNotSupportedError | undefined => {
-  if (!ctx.images?.length || err instanceof ImagesNotSupportedError || !isImageRefusal(err)) {
+): AttachmentsNotSupportedError | undefined => {
+  if (
+    !ctx.images?.length ||
+    err instanceof AttachmentsNotSupportedError ||
+    !isAttachmentRefusal(err)
+  ) {
     return undefined
   }
+  const kinds = new Set(ctx.images.map(attachmentKind))
+  const kind = kinds.size === 1 ? [...kinds][0] : 'file'
   const detail = err instanceof Error ? err.message.slice(0, 160) : undefined
-  return new ImagesNotSupportedError(modelLabel(model), detail && `the provider said: ${detail}`)
+  return unsupportedAttachment(modelLabel(model), kind, detail && `the provider said: ${detail}`)
 }
 
 /** Prepend the host's systemPrompt to a phase system prompt. */
