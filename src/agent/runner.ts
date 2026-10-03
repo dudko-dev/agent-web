@@ -30,7 +30,7 @@ import {
   type ToolCatalogEntry,
 } from '../tools/search.js'
 import type { AgentToolSet } from '../tools/types.js'
-import { createCallCounter, schemaHintOf, sortTools, wrapToolsForRun } from '../tools/wrap.js'
+import { createCallCounter, schemaHintOf, wrapToolsForRun } from '../tools/wrap.js'
 import { executeStep, replanWanted } from './executor.js'
 import type { AgentContext, EffectiveToolStrategy } from './internal.js'
 import {
@@ -190,10 +190,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
   const plannerMode = selectToolMode(plannerModel, cfg.toolMode)
   const executorMode = selectToolMode(executorModel, cfg.toolMode)
-  // Sorted by name: the tool list is the head of every cached prompt prefix,
-  // so it must be byte-identical however the MCP servers happened to connect.
-  const baseTools: AgentToolSet = sortTools(
-    filterTools(config.tools ?? {}, config.availableTools, config.excludedTools),
+  // Declaration order, never re-sorted: the host merges its tool sets in a
+  // fixed order (so the cached prefix is stable), and a server's own order is
+  // what small models were measured against (see the Node sibling's live gate).
+  const baseTools: AgentToolSet = filterTools(
+    config.tools ?? {},
+    config.availableTools,
+    config.excludedTools,
   )
 
   const skills: Skill[] = (config.skills ?? []).map(defineSkill)

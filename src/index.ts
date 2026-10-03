@@ -171,7 +171,7 @@ export {
   FIND_TOOLS_NAME,
 } from './tools/search.js'
 export type { ToolCatalogEntry, SearchToolsOptions } from './tools/search.js'
-export { toolRunContextOf, schemaHintOf, limitModelOutput, sortTools } from './tools/wrap.js'
+export { toolRunContextOf, schemaHintOf, limitModelOutput } from './tools/wrap.js'
 export { createToolResultClearer } from './llm/context-editing.js'
 export type { ToolResultClearing, ClearedInfo } from './llm/context-editing.js'
 export type { ToolRunContext } from './tools/wrap.js'

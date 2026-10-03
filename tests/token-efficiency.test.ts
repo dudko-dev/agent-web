@@ -5,7 +5,6 @@ import {
   createAgent,
   createToolResultClearer,
   defineTool,
-  sortTools,
   withRollingBreakpoint,
   type AgentEvent,
 } from '../dist/index.js'
@@ -63,11 +62,7 @@ test('createToolResultClearer: clears the oldest results past the trigger, stick
   assert.match(shrunk[1].content[0].output?.value as string, /cleared/)
 })
 
-test('sortTools orders a tool set by name', () => {
-  assert.deepEqual(Object.keys(sortTools({ zeta: 1, alpha: 2, mid: 3 })), ['alpha', 'mid', 'zeta'])
-})
-
-test('tool loop: the cache breakpoint rolls to the newest message every round; tools go in name order', async () => {
+test('tool loop: the cache breakpoint rolls to the newest message every round; tools keep declaration order', async () => {
   const route = (info: CallInfo): Reply => {
     if (stageOf(info) === 'planner') return { text: plan(['Look it up']) }
     if (stageOf(info) === 'executor') {
@@ -92,7 +87,7 @@ test('tool loop: the cache breakpoint rolls to the newest message every round; t
   await agent.run('find x')
   const exec = calls.filter((c) => stageOf(c) === 'executor')
   assert.equal(exec.length, 2)
-  assert.deepEqual(exec[0].tools, ['lookup', 'zeta'])
+  assert.deepEqual(exec[0].tools, ['zeta', 'lookup'])
   for (const call of exec) {
     const prompt = call.options.prompt as RawMessage[]
     const marked = prompt.filter((m) =>

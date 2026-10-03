@@ -221,11 +221,3 @@ export const schemaHintOf = async (t: Tool): Promise<string | undefined> => {
     return undefined
   }
 }
-
-/**
- * The same tool set with its keys in name order — a deterministic tool list,
- * so the cached prompt prefix (tools come first) is identical across page
- * loads and MCP connection orders.
- */
-export const sortTools = <T extends Record<string, unknown>>(tools: T): T =>
-  Object.fromEntries(Object.entries(tools).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) as T

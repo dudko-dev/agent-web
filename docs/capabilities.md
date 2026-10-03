@@ -149,8 +149,10 @@ a `usage` event with phase `'compact'`. Without `compaction`, the legacy
   every round, so each round reads all earlier rounds from the cache and writes
   only the new tail (older message breakpoints are removed — a request carries
   at most two, Anthropic allows four);
-- tools are sent **sorted by name**, so the tool list — the head of every cached
-  prefix — is identical however the MCP servers happened to connect.
+- tools keep **declaration order** (hosts merge their tool sets in a fixed
+  order, `useMcpServers` in list order), so the tool list — the head of every
+  cached prefix — is identical from run to run, without reordering what a server
+  declared: small models were measured to depend on that order.
 
 Cache reads/writes show up as `usage.cachedInputTokens` / `cacheWriteTokens`.
 `promptCaching: false` sends plain system strings.
@@ -162,7 +164,7 @@ GitHub Copilot extensions) use to keep a long session cheap:
 
 | Practice | How the agent does it | Knob |
 | --- | --- | --- |
-| Stable, cacheable prefix | system prompts hold only run-stable content; tools sorted by name; dynamic state goes last | `promptCaching` |
+| Stable, cacheable prefix | system prompts hold only run-stable content; deterministic tool order; dynamic state goes last | `promptCaching` |
 | Cache the growing loop | rolling Anthropic breakpoint on the newest message; OpenAI `promptCacheKey` per stage | `promptCaching: { ttl }` |
 | Don't send every tool | above `toolSearchThreshold` the model gets a compact catalogue and `find_tools` (deferred tools) | `toolSelectionStrategy`, `toolSearchThreshold` |
 | Load instructions on demand | skills: only name + description in the prompt, the body on activation | `skills` |
