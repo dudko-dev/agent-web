@@ -43,11 +43,17 @@ const collect = () => {
 test('resolveThinking maps settings to a reasoning level and provider options', () => {
   assert.deepEqual(resolveThinking(undefined), {})
   assert.deepEqual(resolveThinking(false), {})
-  assert.deepEqual(resolveThinking('none'), { reasoning: 'none' })
+  // WebLLM ignores the portable level; its thinking models take enable_thinking.
+  const webllm = (on: boolean) => ({ extra_body: { enable_thinking: on } })
+  assert.deepEqual(resolveThinking('none'), {
+    reasoning: 'none',
+    providerOptions: { 'web-llm': webllm(false) },
+  })
   const on = resolveThinking(true)
   assert.equal(on.reasoning, 'medium')
   assert.deepEqual(on.providerOptions?.google, { thinkingConfig: { includeThoughts: true } })
   assert.deepEqual(on.providerOptions?.openai, { reasoningSummary: 'auto' })
+  assert.deepEqual(on.providerOptions?.['web-llm'], webllm(true))
   const budget = resolveThinking({ level: 'high', budgetTokens: 2048 })
   assert.equal(budget.reasoning, 'high')
   assert.deepEqual(budget.providerOptions?.anthropic, {
@@ -56,7 +62,11 @@ test('resolveThinking maps settings to a reasoning level and provider options', 
   assert.deepEqual(budget.providerOptions?.google, {
     thinkingConfig: { thinkingBudget: 2048, includeThoughts: true },
   })
-  assert.deepEqual(resolveThinking({ level: 'low', includeThoughts: false }), { reasoning: 'low' })
+  assert.deepEqual(budget.providerOptions?.['web-llm'], webllm(true))
+  assert.deepEqual(resolveThinking({ level: 'low', includeThoughts: false }), {
+    reasoning: 'low',
+    providerOptions: { 'web-llm': webllm(true) },
+  })
 })
 
 test('thinkingFor: a stage entry wins over the top-level setting', () => {

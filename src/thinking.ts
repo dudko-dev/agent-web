@@ -7,6 +7,9 @@
  * so a `budgetTokens` is mapped to the provider-specific options of the two
  * providers that take one (Anthropic, Google); provider options win over the
  * portable level by the SDK's precedence rules.
+ *
+ * WebLLM ignores the portable level: its thinking models (Qwen3) are switched
+ * by `extra_body.enable_thinking`, so every setting carries that too.
  */
 
 export type ThinkingLevel =
@@ -53,7 +56,10 @@ export const resolveThinking = (setting: ThinkingSetting | undefined): ResolvedT
   const cfg = normalize(setting)
   if (!cfg) return {}
   const level = cfg.level ?? 'medium'
-  if (level === 'none') return { reasoning: 'none' }
+  // WebLLM's key: a thinking model (Qwen3) thinks by default, so 'none' is the
+  // only way to turn it off; a model without thinking ignores `true`.
+  const webllm = (on: boolean) => ({ 'web-llm': { extra_body: { enable_thinking: on } } })
+  if (level === 'none') return { reasoning: 'none', providerOptions: webllm(false) }
   const includeThoughts = cfg.includeThoughts !== false
   const budget = cfg.budgetTokens
   if (typeof budget === 'number' && budget > 0) {
@@ -62,15 +68,17 @@ export const resolveThinking = (setting: ThinkingSetting | undefined): ResolvedT
       providerOptions: {
         anthropic: { thinking: { type: 'enabled', budgetTokens: budget } },
         google: { thinkingConfig: { thinkingBudget: budget, includeThoughts } },
+        ...webllm(true),
       },
     }
   }
-  if (!includeThoughts) return { reasoning: level }
+  if (!includeThoughts) return { reasoning: level, providerOptions: webllm(true) }
   return {
     reasoning: level,
     providerOptions: {
       google: { thinkingConfig: { includeThoughts: true } },
       openai: { reasoningSummary: 'auto' },
+      ...webllm(true),
     },
   }
 }

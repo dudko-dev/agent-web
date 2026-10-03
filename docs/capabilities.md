@@ -41,7 +41,11 @@ createAgent({ model, thinking: { level: 'high', budgetTokens: 8_000, includeThou
   providers, by the SDK's precedence rules).
 - `includeThoughts` (default `true`) asks Gemini for thought summaries and OpenAI
   for a reasoning summary, so thoughts can be streamed.
-- `false` / unset sends nothing — the provider default applies.
+- WebLLM ignores the portable level, so every setting also carries
+  `web-llm.extra_body.enable_thinking`: `'none'` turns a thinking model (Qwen3)
+  off, any other level leaves it on; models without thinking ignore it.
+- `false` / unset sends nothing — the provider default applies (a local Qwen3
+  thinks by default).
 - Thoughts stream as `step.reasoning-delta` (executor) and
   `final.reasoning-delta` (synthesizer); thinking tokens are reported in
   `usage.reasoningTokens`.
