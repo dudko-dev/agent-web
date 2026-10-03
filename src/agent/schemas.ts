@@ -12,9 +12,11 @@ export const PlanStepSchema = z.object({
 })
 
 export const PlanSchema = z.object({
-  /** One short sentence. For a greeting/question/unclear request, holds the answer and steps is empty. */
+  /** One short sentence. For a greeting/small talk, holds the answer and steps is empty. */
   thought: z.string(),
   steps: z.array(PlanStepSchema),
+  /** Names of the configured skills that apply to this goal. */
+  skills: z.array(z.string()).optional(),
 })
 
 export const ReplanSchema = z.object({

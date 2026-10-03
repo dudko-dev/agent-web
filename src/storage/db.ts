@@ -8,6 +8,10 @@ export interface AgentWebDBOptions {
 export const KEYS_STORE = 'keys'
 export const SECRETS_STORE = 'secrets'
 export const SESSIONS_STORE = 'sessions'
+export const FILES_STORE = 'files'
+
+// v1: keys, secrets, sessions. v2: + files (the virtual file system).
+const DB_VERSION = 2
 
 let cache = new Map<string, Promise<IDBPDatabase>>()
 
@@ -22,11 +26,13 @@ export const openAgentWebDB = (opts: AgentWebDBOptions = {}): Promise<IDBPDataba
   const name = opts.dbName ?? 'agent-web'
   let p = cache.get(name)
   if (!p) {
-    p = openDB(name, 1, {
+    p = openDB(name, DB_VERSION, {
       upgrade(db) {
+        // Idempotent by store: an existing v1 database gains only what it lacks.
         if (!db.objectStoreNames.contains(KEYS_STORE)) db.createObjectStore(KEYS_STORE)
         if (!db.objectStoreNames.contains(SECRETS_STORE)) db.createObjectStore(SECRETS_STORE)
         if (!db.objectStoreNames.contains(SESSIONS_STORE)) db.createObjectStore(SESSIONS_STORE)
+        if (!db.objectStoreNames.contains(FILES_STORE)) db.createObjectStore(FILES_STORE)
       },
     })
     cache.set(name, p)

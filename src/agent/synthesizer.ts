@@ -1,26 +1,36 @@
 import { stream } from '../llm/generate.js'
 import { normalizeUsage } from '../llm/util.js'
 import { looksLikeJson, parsePlainText } from '../parse.js'
+import { renderActiveSkills } from '../skills.js'
 import type { IUsage } from './loop-types.js'
-import { systemFor, type AgentContext } from './internal.js'
+import { imageRefusal, promptFor, stageCall, type AgentContext } from './internal.js'
 
 /**
- * Write the final natural-language summary of what the run accomplished,
- * streaming it as `final.text-delta` events. Plain text only (parsePlainText
- * strips any stray JSON; deltas are suppressed entirely when the model drifts
- * into JSON, so raw structure never reaches a UI). Falls back to a default
- * sentence if the model returns nothing usable.
+ * Write the final natural-language answer of the run, streaming it as
+ * `final.text-delta` events (and thoughts as `final.reasoning-delta`). Plain
+ * text only (parsePlainText strips any stray JSON; deltas are suppressed
+ * entirely when the model drifts into JSON, so raw structure never reaches a
+ * UI). Falls back to a default sentence if the model returns nothing usable.
  */
 export const synthesizeAnswer = async (
   ctx: AgentContext,
   goal: string,
   done: string[],
+  /** Excerpts of what the tools returned — the data the answer is made of. */
+  findings: string[] = [],
 ): Promise<{ text: string; usage: IUsage }> => {
   const state = await ctx.state()
-  const parts = ctx.prompts.synthesizer({ goal, state, done })
+  const active = ctx.activeSkills?.() ?? []
+  const parts = ctx.prompts.synthesizer({
+    goal,
+    state,
+    done,
+    findings,
+    activeSkills: active.length ? renderActiveSkills(active) : undefined,
+  })
   const result = stream(ctx.synthesizerModel, {
-    system: systemFor(ctx, parts.system),
-    prompt: parts.prompt,
+    ...stageCall(ctx, 'synthesizer', parts.system),
+    ...promptFor(ctx, parts.prompt),
     maxOutputTokens: ctx.config.budgets.synthesizer,
     temperature: ctx.config.temperature,
     abortSignal: ctx.signal,
@@ -29,13 +39,30 @@ export const synthesizeAnswer = async (
 
   let text = ''
   let verdict: 'unknown' | 'emit' | 'suppress' = 'unknown'
-  for await (const delta of result.textStream) {
+  for await (const part of result.fullStream) {
+    if (part.type === 'reasoning-delta') {
+      if (part.text) ctx.emit({ type: 'final.reasoning-delta', delta: part.text })
+      continue
+    }
+    if (part.type === 'error') {
+      const err = part.error instanceof Error ? part.error : new Error(String(part.error))
+      throw imageRefusal(ctx, err, ctx.synthesizerModel) ?? err
+    }
+    if (part.type !== 'text-delta') continue
+    const delta = part.text
     text += delta
     if (verdict === 'unknown') {
       const lead = text.trimStart()
       if (!lead) continue
+      // Inline <think> blocks (local reasoning models) are not part of the answer.
+      if (lead.startsWith('<think>') && !text.includes('</think>')) continue
       verdict = looksLikeJson(lead) ? 'suppress' : 'emit'
-      if (verdict === 'emit') ctx.emit({ type: 'final.text-delta', delta: text })
+      if (verdict === 'emit') {
+        const visible = text.includes('</think>')
+          ? text.slice(text.lastIndexOf('</think>') + '</think>'.length).trimStart()
+          : text
+        if (visible) ctx.emit({ type: 'final.text-delta', delta: visible })
+      }
     } else if (verdict === 'emit') {
       ctx.emit({ type: 'final.text-delta', delta })
     }

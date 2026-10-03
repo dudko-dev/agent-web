@@ -25,7 +25,7 @@ bundling), so unifying them would help nothing and couple two release cadences.
 
 ## The one seam: an AI SDK `LanguageModel`
 
-Everything is built on the [Vercel AI SDK](https://ai-sdk.dev) (`ai` v6). The
+Everything is built on the [Vercel AI SDK](https://ai-sdk.dev) (`ai` v7). The
 whole package accepts an AI SDK `LanguageModel`; providers are just different
 ways of producing one. You give the agent a model in one of two ways:
 
@@ -41,14 +41,15 @@ and "structured output" are just thin wrappers over `generateText` /
 `streamText` / `generateObject`, and the planning agent sits on top of the same
 primitives.
 
-## Why AI SDK v6 (not v7)
+## Why AI SDK v7
 
-The ecosystem's `ai` is at v7, but the local-model provider
-`@browser-ai/web-llm` still peers `ai@^6` (it implements the v6/`@ai-sdk/provider@3`
-model spec, `specificationVersion: 'v3'`). Since local models are a core
-requirement, the whole package is pinned to the **coherent v6 stack**
-(`ai@^6`, `@ai-sdk/*` v3/v2, `@browser-ai/web-llm@^2`). When browser-ai ships v7
-support we bump together.
+The package tracks the current `ai` major (v7) together with the provider
+packages and `@browser-ai/*` v3, which peers `ai@^7`. (It was pinned to v6 while
+the local-model provider `@browser-ai/web-llm` still peered `ai@^6`; the whole
+stack moved together once it shipped v7 support.) v7 also brings what the agent
+builds on: the portable `reasoning` setting, `instructions` system messages that
+carry provider options (Anthropic cache breakpoints), `prepareStep` for
+per-step active tools (tool search), and `toModelOutput` (tool-output caps).
 
 ## Modules
 
@@ -71,13 +72,18 @@ src/
 │   ├── define.ts        defineTool() → an AI SDK tool (+ optional promptHint)
 │   ├── prompted.ts      renderCatalog() + dispatch() (the salvage path)
 │   ├── mode.ts          selectToolMode() — native vs prompted per model
+│   ├── approval.ts      the consent gate (autopilot / ask-writes / ask-all / read-only)
+│   ├── search.ts        searchTools() + find_tools for large catalogues
+│   ├── wrap.ts          per-run wrapping: gate, call budget, model-facing output cap
 │   └── types.ts         AgentTool / AgentToolSet
 ├── agent/               the plan→execute→replan→synthesize loop
 │   ├── schemas.ts       zod Plan/Replan schemas (native path)
 │   ├── planner/executor/replanner/synthesizer.ts
 │   ├── runner.ts        createAgent() — orchestration + events
 │   └── loop-types.ts    IPlan / IStepResult / IUsage
-├── memory/              store.ts, sessions.ts (IndexedDBStore), compress.ts
+├── memory/              store.ts, sessions.ts (IndexedDBStore), compress.ts (compaction)
+├── subagent/            tool.ts (createSubagentTool), worker.ts (serveSubagentWorker), protocol.ts
+├── thinking.ts limits.ts caching.ts skills.ts   — see docs/capabilities.md
 ├── mcp/                 OPTIONAL HTTP MCP connector (./mcp subpath)
 │   ├── http.ts          StreamableHTTP connect / mount / refresh
 │   └── oauth.ts         OAuth 2.1 + DCR client provider (vault-backed)

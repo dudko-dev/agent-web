@@ -16,6 +16,16 @@ agent — with host-defined **tools**, optional **MCP**, **system prompts**,
 **IndexedDB** storage, and an **encrypted token vault**. UI-agnostic: it streams
 typed events; you render them however you like.
 
+The agent loop also has **thinking** (portable reasoning levels or exact
+budgets), **token limits** (input / output / thinking / total per run),
+**context compaction** (automatic and `agent.compact()`), **prompt caching**,
+**skills** (SKILL.md bundles), **tool consent modes with an autopilot switch**,
+**tool search** for catalogues of hundreds of MCP tools, **subagents** in
+Web Workers, **image / PDF / file / URL input** (with a clear error for models
+that can't take them),
+and a **virtual file system** in IndexedDB with `fs_*` tools — see
+[docs/capabilities.md](docs/capabilities.md).
+
 [![npm](https://img.shields.io/npm/v/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
 [![npm](https://img.shields.io/npm/dy/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
 [![NpmLicense](https://img.shields.io/npm/l/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
@@ -191,6 +201,13 @@ Browsers can only speak the **HTTP (StreamableHTTP)** transport — stdio MCP is
 Node-only. The connector lives in the `./mcp` subpath so the MCP SDK never
 enters your core bundle.
 
+Pass several servers at once — they connect concurrently, each with its own
+deadline (`connectTimeoutMs`, default 30 s), every page of a paginated
+`tools/list` is read, and tools a server marks `readOnlyHint` are treated as
+read-only by the consent gate. A failing server is reported in `results`; the
+others still mount. With hundreds of tools the agent switches to tool search
+automatically (see [docs/capabilities.md](docs/capabilities.md#large-tool-catalogues-several-mcp-servers)).
+
 `connectMcpHttp` returns `{ tools, catalog, results, refreshServer, close }`.
 `tools` and `catalog` are mutated **in place** by `refreshServer(name)`, so an
 agent built from them picks up a server's new tool list (react to it via the
@@ -270,6 +287,35 @@ browser's silence: it re-probes the endpoint with a plain request and, if that
 gets through, says which header is being refused. `diagnoseMcpCors(url)` is
 exported so a UI can show the same sentence.
 
+## Thinking, limits, consent, skills, subagents
+
+```ts
+import { createAgent, createSubagentTool, defineSkill } from '@dudko.dev/agent-web'
+
+const agent = await createAgent({
+  model,
+  tools: { ...tools, ...mcp.tools },
+  thinking: 'high', // or { level, budgetTokens }; per stage via stageThinking
+  limits: { maxTotalTokens: 200_000, maxReasoningTokens: 20_000 },
+  maxToolCalls: 40,
+  compaction: { contextWindowTokens: 128_000 }, // auto-compacts history and long runs
+  skills: [defineSkill({ name: 'triage', description: 'Triage a bug report', content: '…' })],
+  toolApproval: {
+    mode: 'ask-writes', // autopilot | ask-writes | ask-all | read-only
+    onRequest: async (req) => window.confirm(`Allow ${req.toolName}?`),
+  },
+})
+agent.setToolApprovalMode('autopilot') // flip the switch at any time
+await agent.compact() // summarise the stored transcript now
+```
+
+With more than 40 tools (several MCP servers) the executor switches to **tool
+search**: it starts each step small and calls `find_tools` to activate what it
+needs. Subagents are tools too — `createSubagentTool({ config })` runs a child
+agent in-process, `createSubagentTool({ worker, workerConfig })` isolates it in a
+Web Worker served by `serveSubagentWorker()`. Details, defaults and events:
+**[docs/capabilities.md](docs/capabilities.md)**.
+
 ## Configuration (highlights)
 
 | Option | Default | Purpose |
@@ -280,6 +326,15 @@ exported so a UI can show the same sentence.
 | `tools` | `{}` | host tools (`defineTool`) |
 | `availableTools` / `excludedTools` | — | whitelist / blacklist of tool names mounted from `tools` |
 | `toolMode` | `'auto'` | `native` \| `prompted` \| `auto` (cloud→native, local→prompted) |
+| `toolSelectionStrategy` | `'auto'` | `all` \| `plan-narrowed` \| `search` \| `auto` (search above `toolSearchThreshold`, 40) |
+| `toolApproval` | autopilot | consent policy: `{ mode, rules, onRequest, timeoutMs }`; `agent.setToolApprovalMode()` |
+| `skills` | — | SKILL.md bundles (`defineSkill` / `parseSkillMarkdown` / `loadSkillFromUrl`) |
+| `thinking` / `stageThinking` | provider default | `true`, a level (`'low'`…`'xhigh'`, `'none'`), or `{ level, budgetTokens, includeThoughts }` |
+| `limits` | — | run caps `maxInputTokens` / `maxOutputTokens` / `maxReasoningTokens` / `maxTotalTokens` + `perCall` output caps |
+| `maxToolCalls` / `maxPlanSteps` | ∞ / 8 | tool calls per run / steps per plan |
+| `compaction` | auto, ½ of 128k | `{ auto, contextWindowTokens, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` |
+| `promptCaching` | `true` | stable system prefixes, Anthropic breakpoints, OpenAI cache key |
+| `vision` / `inputs` | inferred | what the model takes as attachments (`run(goal, { images, files })`); see `agent.capabilities` |
 | `systemPrompt` | — | prepended to every phase |
 | `describeState` | — | serialize world state into prompt context |
 | `memory` | — | `ContextStore` (`IndexedDBStore` / `MemoryStore`); recent turns are read back into the planner prompt |
@@ -287,11 +342,14 @@ exported so a UI can show the same sentence.
 | `chatTimeoutMs` | 120000 | per-call watchdog |
 | `replan` / `synthesize` | `true` | toggle phases |
 | `replanAfter` | `'failure'` | replan trigger: `'failure'` \| `'always'` \| `(stepResult) => boolean \| Promise<boolean>` |
-| `compressAfterChars` | 12000 | summarize old history past this size |
+| `compressAfterChars` | 12000 | legacy: summarize old history past this size (when `compaction` is unset) |
 
 ## Docs
 
 - [docs/design.md](docs/design.md) — architecture & rationale.
+- [docs/capabilities.md](docs/capabilities.md) — thinking, limits, compaction,
+  caching, skills, tool consent / autopilot, large MCP catalogues, subagents,
+  autonomy, event reference.
 - [docs/providers.md](docs/providers.md) — every provider, CORS & direct-vs-proxy.
 - [docs/security.md](docs/security.md) — the token vault & its threat model.
 - [docs/tasks.md](docs/tasks.md) — status & roadmap.

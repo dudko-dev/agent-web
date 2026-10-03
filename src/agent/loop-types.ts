@@ -18,6 +18,12 @@ export interface IUsage {
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  /** Output tokens spent thinking (a subset of outputTokens). */
+  reasoningTokens?: number
+  /** Input tokens served from the provider's prompt cache. */
+  cachedInputTokens?: number
+  /** Input tokens written to the provider's prompt cache. */
+  cacheWriteTokens?: number
 }
 
 export interface IToolCall {
@@ -42,10 +48,20 @@ export interface IStepResult {
  */
 export const BLOCKER = '[BLOCKER]'
 
-export const emptyUsage = (): IUsage => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0 })
+export const emptyUsage = (): IUsage => ({
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  reasoningTokens: 0,
+  cachedInputTokens: 0,
+  cacheWriteTokens: 0,
+})
 
 export const addUsage = (a: IUsage, b: IUsage): IUsage => ({
   inputTokens: a.inputTokens + b.inputTokens,
   outputTokens: a.outputTokens + b.outputTokens,
   totalTokens: a.totalTokens + b.totalTokens,
+  reasoningTokens: (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0),
+  cachedInputTokens: (a.cachedInputTokens ?? 0) + (b.cachedInputTokens ?? 0),
+  cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
 })

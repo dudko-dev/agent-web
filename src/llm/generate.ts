@@ -4,23 +4,40 @@ import {
   streamText,
   type LanguageModel,
   type ModelMessage,
+  type SystemModelMessage,
   type ToolSet,
 } from 'ai'
 import type { ZodType } from 'zod'
+import type { ProviderOptionsMap, ThinkingLevel } from '../thinking.js'
 import { promptOf, timeoutSignal } from './util.js'
 
 /** Options shared by the low-level generation helpers. Provide `prompt` OR `messages`. */
 export interface GenerateOptions {
-  system?: string
+  /** The system prompt — a string, or a SystemModelMessage (e.g. with a cache breakpoint). */
+  system?: string | SystemModelMessage
   prompt?: string
   messages?: ModelMessage[]
   tools?: ToolSet
   maxOutputTokens?: number
   temperature?: number
+  /** Portable thinking level (see `resolveThinking`). */
+  reasoning?: ThinkingLevel
+  /** Provider-keyed options (thinking budgets, cache keys, …). */
+  providerOptions?: ProviderOptionsMap
   abortSignal?: AbortSignal
   /** Time-box the call; combined with `abortSignal` (0/undefined = no timeout). */
   timeoutMs?: number
 }
+
+/** The settings every helper forwards; omits undefined keys the SDK would reject. */
+const callSettings = (opts: GenerateOptions) => ({
+  ...(opts.system !== undefined ? { instructions: opts.system } : {}),
+  maxOutputTokens: opts.maxOutputTokens,
+  temperature: opts.temperature,
+  ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+  ...(opts.providerOptions ? { providerOptions: opts.providerOptions as never } : {}),
+  abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
+})
 
 /**
  * One-shot text generation. Thin, provider-agnostic wrapper over the AI SDK's
@@ -34,12 +51,9 @@ export const generate = (
 ): ReturnType<typeof generateText> =>
   generateText({
     model,
-    system: opts.system,
+    ...callSettings(opts),
     ...promptOf(opts),
     tools: opts.tools,
-    maxOutputTokens: opts.maxOutputTokens,
-    temperature: opts.temperature,
-    abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
   })
 
 /** Streaming text generation. Returns the AI SDK `streamText` result (`.textStream`, `.fullStream`). */
@@ -49,12 +63,9 @@ export const stream = (
 ): ReturnType<typeof streamText> =>
   streamText({
     model,
-    system: opts.system,
+    ...callSettings(opts),
     ...promptOf(opts),
     tools: opts.tools,
-    maxOutputTokens: opts.maxOutputTokens,
-    temperature: opts.temperature,
-    abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
   })
 
 /**
@@ -71,9 +82,6 @@ export const generateStructured = <OBJECT>(
   generateObject({
     model,
     schema,
-    system: opts.system,
+    ...callSettings(opts),
     ...promptOf(opts),
-    maxOutputTokens: opts.maxOutputTokens,
-    temperature: opts.temperature,
-    abortSignal: timeoutSignal(opts.abortSignal, opts.timeoutMs),
   })

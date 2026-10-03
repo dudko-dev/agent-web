@@ -6,15 +6,19 @@ import { promptHintOf, type AgentToolSet } from './types.js'
 /**
  * Render a ToolSet into a plain-text catalogue for the prompted/salvage path:
  * `- name(hint): description`. The hint comes from `defineTool({ promptHint })`
- * when present; weak local models lean on it to fill args correctly.
+ * when present, else from `hintOf` (the agent derives one from the tool's JSON
+ * schema, so MCP tools get one too); weak local models lean on it to fill args.
  */
-export const renderCatalog = (tools: AgentToolSet): string => {
+export const renderCatalog = (
+  tools: AgentToolSet,
+  hintOf?: (name: string) => string | undefined,
+): string => {
   const names = Object.keys(tools)
   if (names.length === 0) return '(no tools)'
   return names
     .map((name) => {
       const t = tools[name]
-      const hint = promptHintOf(t) ?? ''
+      const hint = promptHintOf(t) ?? hintOf?.(name) ?? ''
       const desc = typeof t.description === 'string' ? t.description : ''
       return `- ${name}(${hint}): ${desc}`
     })

@@ -1,9 +1,11 @@
 import type { ReplanTrigger } from '../config.js'
 import { runToolLoop } from '../llm/tool-loop.js'
 import { timeoutSignal } from '../llm/util.js'
+import { renderActiveSkills, renderSkillIndex } from '../skills.js'
 import { renderCatalog } from '../tools/prompted.js'
+import { FIND_TOOLS_NAME } from '../tools/search.js'
 import { BLOCKER, type IPlanStep, type IStepResult, type IUsage } from './loop-types.js'
-import { systemFor, type AgentContext } from './internal.js'
+import { imageRefusal, promptFor, stageCall, type AgentContext } from './internal.js'
 
 /**
  * Split the executor's reply into a clean summary and a structural `blocked`
@@ -16,20 +18,39 @@ export const splitBlocker = (raw: string): { summary: string; blocked: boolean }
   return { summary: raw.split(BLOCKER).join('').trim(), blocked: true }
 }
 
+/**
+ * The tool names the executor may call in this step, or undefined for "all".
+ * 'plan-narrowed' → the step's suggestedTools; 'search' → built-ins, the
+ * step's suggestedTools and tools discovered earlier in the run (find_tools
+ * adds more while the step runs).
+ */
 const activeToolNames = (ctx: AgentContext, step: IPlanStep): string[] | undefined => {
-  if (ctx.config.toolSelectionStrategy !== 'plan-narrowed') return undefined
+  const strategy = ctx.strategy ?? ctx.config.toolSelectionStrategy
+  const builtins = [...(ctx.builtinTools ?? [])].filter((n) => ctx.tools[n])
   const suggested = step.suggestedTools ?? []
   const known = suggested.filter((n) => ctx.tools[n])
+  if (strategy === 'search') {
+    const discovered = (ctx.discovered?.() ?? []).slice(-16)
+    return [...new Set([...builtins, ...known, ...discovered])]
+  }
+  if (strategy !== 'plan-narrowed') return undefined
   // A step that named tools but all were unknown still wants tools: fall back to
   // the full set rather than stalling with zero.
   if (known.length === 0 && suggested.length > 0) return Object.keys(ctx.tools)
-  return known
+  return [...new Set([...known, ...builtins])]
 }
 
 const summaryOf = (text: string, toolCallCount: number): string => {
   if (text.length > 0) return text
   return toolCallCount > 0 ? `Executed ${toolCallCount} tool call(s).` : 'Step produced no output.'
 }
+
+/** Catalogue lines ("- name(hint): description") for the given tool names. */
+const catalogFor = (ctx: AgentContext, names: string[]): string =>
+  renderCatalog(
+    Object.fromEntries(names.filter((n) => ctx.tools[n]).map((n) => [n, ctx.tools[n]])),
+    ctx.toolHint,
+  )
 
 /** Execute one plan step: run the tool loop (native or prompted) and emit events. */
 export const executeStep = async (
@@ -39,16 +60,16 @@ export const executeStep = async (
   index: number,
   total: number,
   done: string[],
-): Promise<{ result: IStepResult; usage: IUsage }> => {
+): Promise<{ result: IStepResult; usage: IUsage; stoppedByBudget?: boolean }> => {
   const state = await ctx.state()
-  // Under plan-narrowed selection the prompted path must also see the narrowed
-  // catalogue — the prompt is its only tool surface (native mode gets the SDK's
-  // activeTools instead and never renders the catalogue).
-  const active = activeToolNames(ctx, step)
-  const toolCatalog =
-    active === undefined
-      ? ctx.toolCatalog
-      : renderCatalog(Object.fromEntries(active.map((name) => [name, ctx.tools[name]])))
+  ctx.setCurrentStep?.(step)
+  // Under plan-narrowed / search selection the prompted path must also see the
+  // narrowed catalogue — the prompt is its only tool surface (native mode gets
+  // the SDK's activeTools instead and never renders the catalogue).
+  const initial = activeToolNames(ctx, step)
+  const searchMode = (ctx.strategy ?? ctx.config.toolSelectionStrategy) === 'search'
+  const toolCatalog = catalogFor(ctx, initial ?? Object.keys(ctx.tools))
+  const active = ctx.activeSkills?.() ?? []
   const parts = ctx.prompts.executor({
     goal,
     state,
@@ -58,21 +79,48 @@ export const executeStep = async (
     toolCatalog,
     done,
     mode: ctx.executorMode,
+    skills: ctx.skills?.length ? renderSkillIndex(ctx.skills) : undefined,
+    activeSkills: active.length ? renderActiveSkills(active) : undefined,
+    searchMode: searchMode && Boolean(ctx.tools[FIND_TOOLS_NAME]),
   })
 
   const loop = await runToolLoop(ctx.executorModel, {
     mode: ctx.executorMode,
-    system: systemFor(ctx, parts.system),
-    prompt: parts.prompt,
+    ...stageCall(ctx, 'executor', parts.system),
+    ...promptFor(ctx, parts.prompt),
     tools: ctx.tools,
-    activeTools: active,
+    // In search mode the active set grows while the step runs.
+    activeTools: searchMode
+      ? () => [...new Set([...(initial ?? []), ...(ctx.discovered?.() ?? [])])]
+      : initial,
+    describeTools: (names) => catalogFor(ctx, names),
     maxSteps: ctx.config.maxStepsPerTask,
+    shouldStop: ctx.overBudget,
     maxOutputTokens: ctx.config.budgets.executor,
     temperature: ctx.config.temperature,
     abortSignal: ctx.signal,
     timeoutMs: ctx.config.chatTimeoutMs,
+    caching: ctx.caching,
+    ...(ctx.config.compaction.clearToolResultsAfterTokens > 0
+      ? {
+          clearToolResults: {
+            triggerTokens: ctx.config.compaction.clearToolResultsAfterTokens,
+            keep: ctx.config.compaction.keepToolResults,
+          },
+        }
+      : {}),
     callbacks: {
+      onToolResultsCleared: (info) => {
+        ctx.log.info(`cleared ${info.cleared} stale tool result(s) from the step's context`)
+        ctx.emit({
+          type: 'context.compacted',
+          scope: 'tool-results',
+          beforeTokens: info.beforeTokens,
+          afterTokens: info.afterTokens,
+        })
+      },
       onTextDelta: (delta) => ctx.emit({ type: 'step.text-delta', step, delta }),
+      onReasoningDelta: (delta) => ctx.emit({ type: 'step.reasoning-delta', step, delta }),
       onToolCall: (name, input) => {
         ctx.log.info(`tool call: ${name}`, input)
         ctx.emit({ type: 'step.tool-call', step, name, input })
@@ -82,6 +130,8 @@ export const executeStep = async (
         ctx.emit({ type: 'step.tool-result', step, name, output, ok })
       },
     },
+  }).catch((err: unknown) => {
+    throw imageRefusal(ctx, err, ctx.executorModel) ?? err
   })
   ctx.log.debug('executor text:', loop.text)
 
@@ -94,6 +144,7 @@ export const executeStep = async (
       blocked,
     },
     usage: loop.usage,
+    stoppedByBudget: loop.stoppedByBudget,
   }
 }
 

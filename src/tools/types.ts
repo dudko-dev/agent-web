@@ -8,7 +8,7 @@ import type { Tool, ToolSet } from 'ai'
  * by the prompted/salvage path when it renders the tool catalogue into a text
  * prompt for weak local models.
  */
-export type AgentTool = Tool & { promptHint?: string }
+export type AgentTool = Tool & { promptHint?: string; readOnly?: boolean }
 
 /** A named collection of tools — a plain AI SDK ToolSet, usable directly. */
 export type AgentToolSet = ToolSet
