@@ -1,4 +1,5 @@
 import type { ReplanTrigger } from '../config.js'
+import { contextOverflowOf } from '../context-window.js'
 import { runToolLoop } from '../llm/tool-loop.js'
 import { timeoutSignal } from '../llm/util.js'
 import { renderActiveSkills, renderSkillIndex } from '../skills.js'
@@ -131,7 +132,9 @@ export const executeStep = async (
       },
     },
   }).catch((err: unknown) => {
-    throw imageRefusal(ctx, err, ctx.executorModel) ?? err
+    throw (
+      imageRefusal(ctx, err, ctx.executorModel) ?? contextOverflowOf(err, ctx.executorModel) ?? err
+    )
   })
   ctx.log.debug('executor text:', loop.text)
 

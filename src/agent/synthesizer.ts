@@ -1,3 +1,4 @@
+import { contextOverflowOf } from '../context-window.js'
 import { stream } from '../llm/generate.js'
 import { normalizeUsage } from '../llm/util.js'
 import { looksLikeJson, parsePlainText } from '../parse.js'
@@ -46,7 +47,11 @@ export const synthesizeAnswer = async (
     }
     if (part.type === 'error') {
       const err = part.error instanceof Error ? part.error : new Error(String(part.error))
-      throw imageRefusal(ctx, err, ctx.synthesizerModel) ?? err
+      throw (
+        imageRefusal(ctx, err, ctx.synthesizerModel) ??
+        contextOverflowOf(err, ctx.synthesizerModel) ??
+        err
+      )
     }
     if (part.type !== 'text-delta') continue
     const delta = part.text

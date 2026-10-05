@@ -1,4 +1,5 @@
 import { generateText, type LanguageModel } from 'ai'
+import { withWebLLMContextWindow, type WebLLMAppConfigLike } from '../context-window.js'
 
 /** WebGPU feature-detect — WebLLM requires it. Call before offering local models. */
 export const isWebGPUAvailable = (): boolean =>
@@ -23,6 +24,15 @@ export interface WebLLMModelOptions {
    * Set to `false` to keep the lazy behavior.
    */
   preload?: boolean
+  /**
+   * The context window to load the model with, in tokens. WebLLM loads its
+   * prebuilt models with 4096 (to save VRAM), far below what Qwen3 or Llama
+   * 3.x were trained on; a larger window costs KV-cache memory, not a new
+   * download. Applied through `engineConfig.appConfig` (WebLLM's prebuilt
+   * config with this model's `context_window_size` overridden) unless you pass
+   * an `appConfig` of your own; see `withWebLLMContextWindow`.
+   */
+  contextWindowTokens?: number
   /** Any other @browser-ai/web-llm setting (temperature, worker handler, …). */
   [k: string]: unknown
 }
@@ -74,7 +84,29 @@ export const createWebLLMModel = async (
       'Local models require "@browser-ai/web-llm" and its peer "@mlc-ai/web-llm". Install: npm install @browser-ai/web-llm @mlc-ai/web-llm',
     )
   }
-  const { preload = true, ...settings } = options ?? {}
+  const { preload = true, contextWindowTokens, ...settings } = options ?? {}
+  if (contextWindowTokens) {
+    const engineConfig = (settings.engineConfig ?? {}) as { appConfig?: WebLLMAppConfigLike }
+    let base = engineConfig.appConfig
+    if (!base) {
+      try {
+        const spec = '@mlc-ai/web-llm'
+        base = (
+          (await import(/* webpackIgnore: true */ /* @vite-ignore */ spec)) as {
+            prebuiltAppConfig: WebLLMAppConfigLike
+          }
+        ).prebuiltAppConfig
+      } catch {
+        throw new Error(
+          'contextWindowTokens needs "@mlc-ai/web-llm" (for its prebuilt model list), or pass engineConfig.appConfig yourself.',
+        )
+      }
+    }
+    settings.engineConfig = {
+      ...engineConfig,
+      appConfig: withWebLLMContextWindow(base, model, contextWindowTokens),
+    }
+  }
   // webLLM(modelId, settings) returns a LanguageModel. The model id is a strict
   // union in the provider's types; we accept any string and cast at the seam.
   const languageModel = mod.webLLM(

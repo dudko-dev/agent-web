@@ -100,6 +100,18 @@ export {
 } from './providers/webllm.js'
 export type { WebLLMModelOptions } from './providers/webllm.js'
 export {
+  ContextWindowExceededError,
+  contextOverflowOf,
+  contextWindowOf,
+  fitCompactionToWindow,
+  toolDefinitionTokens,
+  TOOL_SEARCH_WINDOW_SHARE,
+  WEBLLM_DEFAULT_CONTEXT_WINDOW,
+  webLLMContextWindow,
+  withWebLLMContextWindow,
+} from './context-window.js'
+export type { WebLLMAppConfigLike } from './context-window.js'
+export {
   supportsNativeTools,
   supportsStructuredOutput,
   directBrowserOk,
