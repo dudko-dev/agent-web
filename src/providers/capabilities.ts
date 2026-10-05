@@ -36,8 +36,9 @@ export const supportsStructuredOutput = (p: ProviderType): boolean => CLOUD.has(
 export const directBrowserOk = (p: ProviderType): boolean =>
   p === 'google' || p === 'gateway' || p === 'openai-compatible' || p === 'anthropic'
 
-// Local / on-device runtimes: the prompted path is text-only.
+// Local / on-device runtimes: text-only, unless the model id names a vision model.
 const LOCAL_RE = /web-?llm|mlc|browser-ai|transformers|built-?in/i
+const LOCAL_VISION_RE = /vision|[-_]vl\b|[-_]vl[-_]|llava|smolvlm|moondream|gemma-?3n/i
 // Text-only model families under otherwise vision-capable providers.
 const TEXT_ONLY_MODEL_RE =
   /gpt-3\.5|o1-mini|o3-mini|deepseek|text-(davinci|embedding)|embedding|babbage|davinci|codestral/i
@@ -46,8 +47,9 @@ const VISION_PROVIDER_RE = /^(google|anthropic|openai|azure|xai|vertex|bedrock|g
 const PDF_PROVIDER_RE = /^(google|anthropic|openai|azure|vertex|bedrock|gemini)/i
 
 /**
- * Whether a model accepts image input: `true` (expected to), `false` (known
- * not to — local runtimes, DeepSeek, text-only families), or `undefined`
+ * Whether a model accepts image input: `true` (expected to — also a local
+ * vision model such as WebLLM's Phi-3.5-vision), `false` (known not to — other
+ * local models, DeepSeek, text-only families), or `undefined`
  * (unknown, e.g. an OpenAI-compatible server — the agent tries and turns a
  * provider refusal into a clear error). Override per agent with `vision`.
  */
@@ -61,7 +63,7 @@ export const supportsImages = (model: unknown): boolean | undefined => {
   if (!model || typeof model !== 'object') return undefined
   const provider = String((model as { provider?: unknown }).provider ?? '')
   const id = String((model as { modelId?: unknown }).modelId ?? '')
-  if (LOCAL_RE.test(provider)) return false
+  if (LOCAL_RE.test(provider)) return LOCAL_VISION_RE.test(id)
   if (/deepseek/i.test(provider) || TEXT_ONLY_MODEL_RE.test(id)) return false
   return VISION_PROVIDER_RE.test(provider) ? true : undefined
 }
@@ -78,5 +80,7 @@ export const supportsPdf = (model: unknown): boolean | undefined => {
     typeof model === 'string'
       ? (model.split('/')[0] ?? '')
       : String((model as { provider?: unknown } | undefined)?.provider ?? '')
+  // A local vision model reads images, not PDFs.
+  if (LOCAL_RE.test(provider)) return false
   return PDF_PROVIDER_RE.test(provider) ? true : undefined
 }

@@ -4,6 +4,12 @@ import type { BrowserAgentConfig } from '../config.js'
 import { resolveConfig } from '../config.js'
 import type { AgentEvent, AgentEventHandler, UsagePhase } from '../events.js'
 import { checkLimits, type LimitBreach } from '../limits.js'
+import {
+  contextWindowOf,
+  fitCompactionToWindow,
+  TOOL_SEARCH_WINDOW_SHARE,
+  toolDefinitionTokens,
+} from '../context-window.js'
 import { clip } from '../llm/util.js'
 import {
   compactSteps,
@@ -116,8 +122,16 @@ export interface Agent {
   readonly toolApprovalMode: ToolApprovalMode
   /** The tool catalogue (host + MCP tools after filtering). */
   listTools(): ToolCatalogEntry[]
-  /** The effective tool selection ('auto' resolved by catalogue size). */
+  /**
+   * The effective tool selection ('auto' resolved by the catalogue's size: its
+   * count, or its definitions' share of the context window).
+   */
   readonly toolStrategy: EffectiveToolStrategy
+  /**
+   * The context window the agent fits its runs into: the configured one, never
+   * more than the model's own (read from local WebLLM models).
+   */
+  readonly contextWindowTokens: number
   /** Configured skills (name + description). */
   readonly skills: { name: string; description: string }[]
   /**
@@ -190,6 +204,17 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
   const plannerMode = selectToolMode(plannerModel, cfg.toolMode)
   const executorMode = selectToolMode(executorModel, cfg.toolMode)
+  // The window every run must fit: the configured one, capped by the smallest
+  // window of the models in play (a local model's is a few thousand tokens),
+  // with the compaction sizes derived from it.
+  const modelWindows = [executorModel, plannerModel, synthesizerModel]
+    .map(contextWindowOf)
+    .filter((w): w is number => w !== undefined)
+  const modelWindow = modelWindows.length ? Math.min(...modelWindows) : undefined
+  cfg.compaction = fitCompactionToWindow(cfg.compaction, config.compaction, modelWindow)
+  // A known small window means compacting by tokens even without a configured
+  // `compaction` (the legacy chars threshold knows nothing of the window).
+  const byTokens = Boolean(config.compaction) || modelWindow !== undefined
   // Declaration order, never re-sorted: the host merges its tool sets in a
   // fixed order (so the cached prefix is stable), and a server's own order is
   // what small models were measured against (see the Node sibling's live gate).
@@ -207,9 +232,15 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   }
 
   const catalog = toolCatalogOf(baseTools)
+  // 'auto' searches instead of listing once the catalogue is long, or once its
+  // definitions would take a large share of the window (a few MCP tools with
+  // rich schemas can fill a local model's 4k window on their own).
+  const toolTokens =
+    cfg.toolSelectionStrategy === 'auto' ? await toolDefinitionTokens(baseTools) : 0
   const strategy: EffectiveToolStrategy =
     cfg.toolSelectionStrategy === 'auto'
-      ? catalog.length > cfg.toolSearchThreshold
+      ? catalog.length > cfg.toolSearchThreshold ||
+        toolTokens > cfg.compaction.contextWindowTokens * TOOL_SEARCH_WINDOW_SHARE
         ? 'search'
         : 'all'
       : cfg.toolSelectionStrategy
@@ -245,15 +276,18 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   // what is known about the model.
   const textOnly = executorMode === 'prompted'
   const accepts: Record<AttachmentKind, boolean | undefined> = {
+    // A local vision model (the prompted path carries images too) says so by its id.
     image:
-      config.inputs?.images ?? config.vision ?? (textOnly ? false : supportsImages(executorModel)),
+      config.inputs?.images ??
+      config.vision ??
+      (textOnly ? supportsImages(executorModel) === true : supportsImages(executorModel)),
     pdf: config.inputs?.pdf ?? (textOnly ? false : supportsPdf(executorModel)),
     file: config.inputs?.files ?? (textOnly ? false : undefined),
   }
   const approval = createApprovalState(config.toolApproval)
   const log = createLogger(cfg.logLevel, config.logger)
   log.info(
-    `agent ready — ${catalog.length} tool(s) (${strategy}), skills: [${[...skillNames].join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
+    `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${[...skillNames].join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
   )
 
   const run = async (goal: string, opts: RunOptions = {}): Promise<RunResult> => {
@@ -378,9 +412,9 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       }
     }
     // Auto-compaction of a long transcript BEFORE planning, so the run starts
-    // within the window (configured `compaction` only; the legacy
-    // compressAfterChars path compacts after the run, as it always did).
-    if (config.memory && config.compaction && cfg.compaction.auto && history.length > 0) {
+    // within the window (a configured `compaction`, or a model whose window is
+    // known; the legacy compressAfterChars path compacts after the run).
+    if (config.memory && byTokens && cfg.compaction.auto && history.length > 0) {
       const before = estimateMessagesTokens(history)
       if (before > cfg.compaction.thresholdTokens) {
         const compacted = await compressHistory(history, synthesizerModel, {
@@ -657,12 +691,12 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
       // 4) COMPACT persisted history (legacy chars threshold, or the configured
       // compaction's token threshold).
-      if (config.memory && (config.compaction ? cfg.compaction.auto : cfg.compressAfterChars > 0)) {
+      if (config.memory && (byTokens ? cfg.compaction.auto : cfg.compressAfterChars > 0)) {
         try {
           const transcript = await config.memory.load(sessionId)
           const before = estimateMessagesTokens(transcript)
           const compacted = await compressHistory(transcript, synthesizerModel, {
-            ...(config.compaction
+            ...(byTokens
               ? {
                   thresholdTokens: cfg.compaction.thresholdTokens,
                   keepRecent: cfg.compaction.keepRecentTurns,
@@ -739,6 +773,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     },
     listTools: () => catalog.map((e) => ({ ...e })),
     toolStrategy: strategy,
+    contextWindowTokens: cfg.compaction.contextWindowTokens,
     skills: skills.map((s) => ({ name: s.name, description: s.description })),
     capabilities: { images: accepts.image, pdf: accepts.pdf, files: accepts.file },
     models: { planner: plannerModel, executor: executorModel, synthesizer: synthesizerModel },

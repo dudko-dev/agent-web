@@ -1,3 +1,4 @@
+import { contextOverflowOf } from '../context-window.js'
 import { generate, generateStructured } from '../llm/generate.js'
 import { normalizeUsage } from '../llm/util.js'
 import { parsePlannerResponse } from '../parse.js'
@@ -92,6 +93,9 @@ export const createPlan = async (
       // A refused image is not a schema problem either: say so clearly.
       const refused = imageRefusal(ctx, err, ctx.plannerModel)
       if (refused) throw refused
+      // Nor is a prompt too long for the window: the fallback would fail the same way.
+      const overflow = contextOverflowOf(err, ctx.plannerModel)
+      if (overflow) throw overflow
       // Graceful degradation: fall back to the salvage parser instead of failing.
       ctx.log.warn('planner: native structured output failed, salvaging:', asMessage(err))
       ctx.emit({ type: 'retry', phase: 'plan', attempt: 1, error: asMessage(err) })
@@ -102,7 +106,9 @@ export const createPlan = async (
   // mode 'prompted' so the model gets explicit JSON-shape instructions even
   // when the schema-constrained call just failed.
   const result = await generate(ctx.plannerModel, commonFor('prompted')).catch((err: unknown) => {
-    throw imageRefusal(ctx, err, ctx.plannerModel) ?? err
+    throw (
+      imageRefusal(ctx, err, ctx.plannerModel) ?? contextOverflowOf(err, ctx.plannerModel) ?? err
+    )
   })
   const parsed = parsePlannerResponse(result.text)
   ctx.log.debug('planner (prompted) raw:', result.text)

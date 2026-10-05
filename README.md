@@ -149,12 +149,18 @@ if (!isWebGPUAvailable()) throw new Error('WebGPU required for local models')
 
 const model = await createWebLLMModel('Llama-3.2-3B-Instruct-q4f16_1-MLC', {
   initProgressCallback: (r) => console.log('loading', Math.round(r.progress * 100), '%'),
+  contextWindowTokens: 8192, // WebLLM loads with 4096 unless told otherwise
 })
 
-// Local models default to the robust "prompted" tool-mode automatically.
+// Local models default to the robust "prompted" tool-mode automatically, and
+// the agent sizes compaction and tool lists from the model's own window.
 const agent = await createAgent({ model, tools /* ...same as above */ })
 await agent.run('Summarize the current page and add a heading')
 ```
+
+A local **vision** model (`Phi-3.5-vision-instruct-q4f16_1-MLC`) takes images
+like a cloud one. See [docs/capabilities.md](docs/capabilities.md#the-models-window-is-a-hard-limit)
+for the window: WebLLM's default is 4096 tokens, raised per model at load.
 
 You can also pass a model by spec: `{ providerType: 'web-llm', model: '…' }`.
 
@@ -326,13 +332,13 @@ Web Worker served by `serveSubagentWorker()`. Details, defaults and events:
 | `tools` | `{}` | host tools (`defineTool`) |
 | `availableTools` / `excludedTools` | — | whitelist / blacklist of tool names mounted from `tools` |
 | `toolMode` | `'auto'` | `native` \| `prompted` \| `auto` (cloud→native, local→prompted) |
-| `toolSelectionStrategy` | `'auto'` | `all` \| `plan-narrowed` \| `search` \| `auto` (search above `toolSearchThreshold`, 40) |
+| `toolSelectionStrategy` | `'auto'` | `all` \| `plan-narrowed` \| `search` \| `auto` (search above `toolSearchThreshold`, 40, or once the definitions take ¼ of the window) |
 | `toolApproval` | autopilot | consent policy: `{ mode, rules, onRequest, timeoutMs }`; `agent.setToolApprovalMode()` |
 | `skills` | — | SKILL.md bundles (`defineSkill` / `parseSkillMarkdown` / `loadSkillFromUrl`) |
 | `thinking` / `stageThinking` | provider default | `true`, a level (`'low'`…`'xhigh'`, `'none'`), or `{ level, budgetTokens, includeThoughts }` |
 | `limits` | — | run caps `maxInputTokens` / `maxOutputTokens` / `maxReasoningTokens` / `maxTotalTokens` + `perCall` output caps |
 | `maxToolCalls` / `maxPlanSteps` | ∞ / 8 | tool calls per run / steps per plan |
-| `compaction` | auto, ½ of 128k | `{ auto, contextWindowTokens, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` |
+| `compaction` | auto, ½ of 128k (a local model: its own window) | `{ auto, contextWindowTokens, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` — never more than the model's window |
 | `promptCaching` | `true` | stable system prefixes, Anthropic breakpoints, OpenAI cache key |
 | `vision` / `inputs` | inferred | what the model takes as attachments (`run(goal, { images, files })`); see `agent.capabilities` |
 | `systemPrompt` | — | prepended to every phase |

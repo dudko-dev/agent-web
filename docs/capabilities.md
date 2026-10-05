@@ -137,8 +137,51 @@ await agent.compact()           // manual: summarise the stored transcript now
 
 Each compaction emits `context.compacted { scope, beforeTokens, afterTokens }`
 (`scope`: `'history' | 'trace' | 'tool-results'`) and, when a model summarised,
-a `usage` event with phase `'compact'`. Without `compaction`, the legacy
-`compressAfterChars` post-run compression applies as before.
+a `usage` event with phase `'compact'`. Without `compaction` (and without a
+local model, see below), the legacy `compressAfterChars` post-run compression
+applies as before.
+
+### The model's window is a hard limit
+
+A prompt that doesn't fit is refused outright, so everything above is sized
+from the window, and the window must be the model's real one:
+
+- **Local WebLLM models** report their own window. WebLLM loads its prebuilt
+  models with **4096 tokens** (to save VRAM; "-1k" builds with 1024), whatever
+  the model was trained on. The agent reads it from the loaded engine (or the
+  app config it was built with) and never assumes more — even when
+  `contextWindowTokens` says more; it compacts by tokens even without a
+  `compaction` config. `agent.contextWindowTokens` is the window in use.
+- **Raising it**: Qwen3 and Llama 3.x take far more than 4096. A larger window
+  costs KV-cache memory, not a new download:
+
+  ```ts
+  createWebLLMModel('Qwen3.5-2B-q4f16_1-MLC', { contextWindowTokens: 32_768 })
+  // under a bundler, with your own factory:
+  import { prebuiltAppConfig } from '@mlc-ai/web-llm'
+  webLLM(id, { engineConfig: { appConfig: withWebLLMContextWindow(prebuiltAppConfig, id, 32_768) } })
+  ```
+
+  (`@browser-ai/web-llm` ignores its top-level `appConfig` setting — it has to
+  go in `engineConfig`.)
+- **Sizes follow the window**: with a small window the threshold (½), the
+  tool-result clearing point (¼), the cap on one tool result (a quarter of the
+  window) and the verbatim results kept (1 below 16k) shrink with it — also
+  when the host set them for a larger window.
+- **Tools**: `'auto'` tool selection switches to search not only above
+  `toolSearchThreshold` tools but also once the tool definitions would take a
+  quarter of the window — a few MCP tools with rich schemas can fill a 4k
+  window on their own.
+- **Overflow**: when a provider still refuses a prompt for its length (WebLLM,
+  OpenAI `context_length_exceeded`, Claude "prompt is too long", Gemini, llama.cpp),
+  the run reports a `ContextWindowExceededError` — "The conversation no longer
+  fits the context window of … (4124 tokens; the window is 4096). Start a new
+  chat or compact this one, connect fewer tools, or switch to a model with a
+  larger window." — instead of the provider's text.
+
+Helpers: `webLLMContextWindow(model)`, `withWebLLMContextWindow(appConfig, id,
+tokens)`, `fitCompactionToWindow`, `toolDefinitionTokens(tools)`,
+`contextOverflowOf(err, model)`.
 
 ## Prompt caching
 
@@ -364,7 +407,8 @@ What the model takes is `agent.capabilities` — `{ images, pdf, files }`, each
 | Gemini, Claude, OpenAI GPT-4o/4.1/5 | ✓ | ✓ | tried |
 | xAI Grok | ✓ | tried | tried |
 | DeepSeek, `gpt-3.5`, `o1-mini`… | ✗ | ✗ | tried |
-| Local / prompted mode (WebLLM, built-in AI) | ✗ | ✗ | ✗ |
+| Local vision models (WebLLM `Phi-3.5-vision…`; ids naming vision / VL / LLaVA / SmolVLM / Gemma 3n) | ✓ | ✗ | ✗ |
+| Other local models (WebLLM, built-in AI) | ✗ | ✗ | ✗ |
 | OpenAI-compatible servers | tried | tried | tried |
 
 Override with `vision` (images) or `inputs: { images, pdf, files }`.

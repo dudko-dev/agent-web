@@ -49,6 +49,9 @@ behind every decision.
 - `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
   `protocol` (postMessage shapes).
 - `src/{thinking,limits,caching,skills,images}.ts` — see docs/capabilities.md.
+- `src/context-window.ts` — the model's real window (read from WebLLM models),
+  compaction sized to it, tool search by definition size, the clear
+  `ContextWindowExceededError`.
 - `src/files/` — `vfs` (VirtualFileSystem, IndexedDB `files` store) + `tools`
   (createFileTools).
 - `src/mcp/` — optional HTTP connector (`./mcp` subpath): `http` (transport,
