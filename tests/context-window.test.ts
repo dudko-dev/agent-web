@@ -193,3 +193,42 @@ test('a local vision model takes images; other local models and PDFs do not', as
   const text = await createAgent({ model: webLLMModel(answer).model })
   assert.equal(text.capabilities.images, false)
 })
+
+test('the browser’s built-in model reports its window once its session exists', async () => {
+  const { contextWindowOf } = await import('../dist/index.js')
+  assert.equal(contextWindowOf({ provider: 'browser-ai', getContextWindow: () => 6144 }), 6144)
+  assert.equal(
+    contextWindowOf({ provider: 'browser-ai', getContextWindow: () => undefined }),
+    undefined,
+  )
+  assert.equal(contextWindowOf({ provider: 'google.generative-ai' }), undefined)
+})
+
+test('provider capabilities as of October 2026', async () => {
+  const { directBrowserOk } = await import('../dist/index.js')
+  for (const p of ['google', 'openai', 'anthropic', 'xai', 'deepseek', 'gateway'] as const) {
+    assert.equal(directBrowserOk(p), true, p)
+  }
+  assert.equal(directBrowserOk('web-llm'), false)
+  assert.equal(supportsImages({ provider: 'moonshotai.chat', modelId: 'kimi-k2.6' }), true)
+  assert.equal(supportsPdf({ provider: 'moonshotai.chat', modelId: 'kimi-k3' }), false)
+  assert.equal(supportsImages({ provider: 'mistral.chat', modelId: 'mistral-small-2603' }), true)
+  assert.equal(supportsImages({ provider: 'deepseek.chat', modelId: 'deepseek-flash' }), true)
+  assert.equal(supportsImages({ provider: 'deepseek.chat', modelId: 'deepseek-v4-pro' }), false)
+  assert.equal(supportsImages({ provider: 'groq.chat', modelId: 'openai/gpt-oss-20b' }), undefined)
+})
+
+test('without a synthesizer the answer is the step’s own reply, not a stock sentence', async () => {
+  const { model, calls } = scriptedModel((info) =>
+    stageOf(info) === 'planner'
+      ? { text: JSON.stringify({ thought: 'p', steps: [{ description: 'Say hi' }] }) }
+      : { text: 'Hi from the step.' },
+  )
+  const agent = await createAgent({ model, synthesize: false, replan: false })
+  const result = await agent.run('Say hi to the user')
+  assert.equal(result.final, 'Hi from the step.')
+  assert.deepEqual(
+    calls.map((c) => stageOf(c)),
+    ['planner', 'executor'],
+  )
+})

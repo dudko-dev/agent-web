@@ -672,7 +672,14 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       if (isAborted()) return stop()
 
       // 3) SYNTHESIZE
-      let summary = 'Done — the changes have been applied.'
+      // Without a synthesizer (or when it fails) the answer is what the steps
+      // themselves said — the model's own words — not a stock sentence.
+      const stepWords = result.trace
+        .map((r) => r.summary.trim())
+        .filter((t) => t && !/^(Executed \d+ tool call\(s\)\.|Step produced no output\.)$/.test(t))
+      let summary = stepWords.length
+        ? stepWords.join('\n\n')
+        : 'Done — the changes have been applied.'
       if (cfg.synthesize) {
         try {
           const synth = await synthesizeAnswer(ctx, text, done, findings)

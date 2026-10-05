@@ -13,18 +13,23 @@ peer package and fetching the API key from your `CredentialStore`.
 
 | `providerType` | Peer package | Needs key | `baseURL` | Notes |
 | --- | --- | --- | --- | --- |
-| `openai` | `@ai-sdk/openai` | yes | optional | See CORS note below. |
+| `openai` | `@ai-sdk/openai` | yes | optional | Direct BYOK works (CORS since 2026). |
 | `anthropic` | `@ai-sdk/anthropic` | yes | optional | Browser-access header injected for you. |
 | `google` | `@ai-sdk/google` | yes | optional | Gemini; the most reliable **direct** BYOK path. |
 | `openai-compatible` | `@ai-sdk/openai-compatible` | yes | **required** | vLLM, Ollama, LM Studio, LocalAI, your proxy… |
-| `xai` | `@ai-sdk/xai` | yes | optional | Prefer a proxy from the browser. |
-| `deepseek` | `@ai-sdk/deepseek` | yes | optional | Prefer a proxy from the browser. |
+| `xai` | `@ai-sdk/xai` | yes | optional | Direct BYOK works. |
+| `deepseek` | `@ai-sdk/deepseek` | yes | optional | Direct BYOK works; the Flash line reads images. |
 | `gateway` | *(ships in `ai`)* | Vercel key | optional | Vercel AI Gateway — recommended for shared keys. |
 | `web-llm` | `@browser-ai/web-llm` | **no** | — | Local WebGPU model; resolved via `createWebLLMModel`. |
 
 Passing a **direct** `LanguageModel` bypasses the registry entirely — use this
 for Chrome/Edge built-in AI (`@browser-ai/core`, `browserAI()`),
-`@browser-ai/transformers-js`, or any custom model.
+`@browser-ai/transformers-js`, or any other AI SDK provider. These also answer a
+browser directly with the user's key (checked October 2026): Moonshot Kimi
+(`@ai-sdk/moonshotai`; images, no PDFs), Groq (`@ai-sdk/groq`), Mistral
+(`@ai-sdk/mistral`; images), OpenRouter (`@openrouter/ai-sdk-provider`) and
+Cerebras (`@ai-sdk/cerebras` — its error answers lack CORS, so a bad key reads
+as a network error).
 
 ### Deliberately excluded (Node-only)
 
@@ -47,11 +52,12 @@ Two independent facts govern direct BYOK from the browser:
 
 Practical guidance, exposed programmatically via `directBrowserOk(providerType)`:
 
-- **Direct BYOK works well:** `google`, `openai-compatible`, `gateway`, and
-  `anthropic` (the registry adds `anthropic-dangerous-direct-browser-access:
-  true`).
-- **Direct BYOK is unreliable:** `openai` (`api.openai.com` blocks browser CORS),
-  `xai`, `deepseek`. Route these through a proxy.
+- **Direct BYOK works** (checked October 2026 with a preflight from a page
+  origin): `google`, `openai`, `xai`, `deepseek`, `openai-compatible` /
+  `gateway` (your endpoint), and `anthropic` (the registry adds
+  `anthropic-dangerous-direct-browser-access: true`).
+- CORS policies change: `directBrowserOk` reflects the last check, and a proxy
+  `baseURL` is always the fallback.
 
 ### Recommended production pattern — proxy or gateway
 

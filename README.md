@@ -134,11 +134,11 @@ const result = await agent.run('Add a centered title and a totals line', {
 console.log(result.final, `— ${result.applied} changes`)
 ```
 
-> **Direct browser calls & CORS:** not every provider allows direct BYOK calls
-> from a browser origin. Google (Gemini) and openai-compatible/gateway are the
-> reliable direct paths; Anthropic works (a required header is injected for you);
-> OpenAI/xAI/DeepSeek usually need a proxy. See
-> [docs/providers.md](docs/providers.md).
+> **Direct browser calls & CORS:** as of October 2026 Google, OpenAI, xAI and
+> DeepSeek send CORS headers, so a user's own key works straight from the page;
+> Anthropic works too (a required header is injected for you). Kimi, Groq,
+> Mistral and OpenRouter do as well (build their AI SDK models yourself and pass
+> them as `model`). See [docs/providers.md](docs/providers.md).
 
 ## Quick start — local WebGPU model (no key, offline)
 

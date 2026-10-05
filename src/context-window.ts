@@ -87,8 +87,25 @@ export const webLLMContextWindow = (model: unknown): number | undefined => {
   return /-1k$/i.test(id) ? 1024 : WEBLLM_DEFAULT_CONTEXT_WINDOW
 }
 
-/** The model's own context window when it can be known (local models), else undefined. */
-export const contextWindowOf = (model: unknown): number | undefined => webLLMContextWindow(model)
+/**
+ * The model's own context window when it can be known (local models), else
+ * undefined: WebLLM's (see above), or the browser's built-in model's
+ * (`@browser-ai/core` reports it once its session exists).
+ */
+export const contextWindowOf = (model: unknown): number | undefined => {
+  const webllm = webLLMContextWindow(model)
+  if (webllm !== undefined) return webllm
+  const m = model as { provider?: string; getContextWindow?: () => number | undefined } | undefined
+  if (m && typeof m === 'object' && m.provider === 'browser-ai') {
+    try {
+      const w = m.getContextWindow?.()
+      return typeof w === 'number' && w > 0 ? w : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
 
 /**
  * Fit the compaction settings to the model's window: the window in use is the
