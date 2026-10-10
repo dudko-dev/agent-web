@@ -125,8 +125,8 @@
     "node": ">=18"
   },
   "dependencies": {
-    "ai": "^7.0.127",
-    "idb": "^8.0.3",
+    "ai": "^7.0.137",
+    "idb": "^8.0.4",
     "zod": "^4.6.5"
   },
   "peerDependencies": {
@@ -174,16 +174,16 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^4.0.71",
-    "@ai-sdk/deepseek": "^3.0.58",
-    "@ai-sdk/google": "^4.0.87",
-    "@ai-sdk/openai": "^4.0.83",
-    "@ai-sdk/openai-compatible": "^3.0.62",
-    "@ai-sdk/xai": "^5.0.14",
+    "@ai-sdk/anthropic": "^4.0.78",
+    "@ai-sdk/deepseek": "^3.0.63",
+    "@ai-sdk/google": "^4.0.93",
+    "@ai-sdk/openai": "^4.0.91",
+    "@ai-sdk/openai-compatible": "^3.0.67",
+    "@ai-sdk/xai": "^5.0.20",
     "@browser-ai/core": "^3.0.4",
     "@browser-ai/web-llm": "^3.0.4",
     "@mlc-ai/web-llm": "^0.2.85",
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@types/node": "^22.9.0",
     "fake-indexeddb": "^6.2.5",
     "prettier": "^3.9.9",
