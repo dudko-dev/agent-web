@@ -1,6 +1,6 @@
 {
   "name": "@dudko.dev/agent-web",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "description": "Headless, configurable in-browser LLM agent on the Vercel AI SDK: multi-provider bring-your-own-key (OpenAI, Anthropic, Google, xAI, DeepSeek, gateway, openai-compatible) AND local WebGPU/WebLLM, native + prompted tool-calling, structured output, an encrypted IndexedDB token vault, and a plan → execute → replan → synthesize loop. UI-agnostic.",
   "type": "module",
   "sideEffects": false,
@@ -125,9 +125,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "ai": "^7.0.137",
+    "ai": "^7.0.143",
     "idb": "^8.0.4",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@ai-sdk/anthropic": "^4.0.0",
@@ -174,20 +174,20 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^4.0.78",
-    "@ai-sdk/deepseek": "^3.0.63",
-    "@ai-sdk/google": "^4.0.93",
-    "@ai-sdk/openai": "^4.0.91",
-    "@ai-sdk/openai-compatible": "^3.0.67",
-    "@ai-sdk/xai": "^5.0.20",
+    "@ai-sdk/anthropic": "^4.0.82",
+    "@ai-sdk/deepseek": "^3.0.67",
+    "@ai-sdk/google": "^4.0.99",
+    "@ai-sdk/openai": "^4.0.96",
+    "@ai-sdk/openai-compatible": "^3.0.71",
+    "@ai-sdk/xai": "^5.0.24",
     "@browser-ai/core": "^3.0.4",
     "@browser-ai/web-llm": "^3.0.4",
-    "@mlc-ai/web-llm": "^0.2.85",
+    "@mlc-ai/web-llm": "^0.2.86",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@types/node": "^22.9.0",
-    "fake-indexeddb": "^6.2.5",
-    "prettier": "^3.9.9",
-    "tsup": "^8.5.1",
+    "fake-indexeddb": "^6.2.6",
+    "prettier": "^3.9.10",
+    "tsup": "^9.0.0",
     "typescript": "^6.0.3"
   }
 }
