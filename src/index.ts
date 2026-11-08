@@ -13,7 +13,7 @@ export type { AgentContext, EffectiveToolStrategy } from './agent/internal.js'
 
 // ── Subagents (in-process or Web Worker) ─────────────────────────────────────
 export { createSubagentTool } from './subagent/tool.js'
-export type { SubagentToolOptions, SubagentWorkerConfig } from './subagent/tool.js'
+export type { SubagentProfile, SubagentToolOptions, SubagentWorkerConfig } from './subagent/tool.js'
 export { serveSubagentWorker } from './subagent/worker.js'
 export type { ServeSubagentOptions } from './subagent/worker.js'
 export type {

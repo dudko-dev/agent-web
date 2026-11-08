@@ -380,6 +380,50 @@ serveSubagentWorker({
 - The protocol is plain structured-clone messages over any `MessageEndpoint`
   (a `Worker`, a worker's `self`, a `MessagePort`).
 
+### Profiles: other models, params and context per call
+
+A subagent normally has one fixed configuration. `profiles` lets the **parent
+model** choose between named variants of it, per call:
+
+```ts
+const researcher = createSubagentTool({
+  name: 'researcher',
+  description: 'Research a question with the docs tools and report the facts.',
+  config: { model: fastModel, tools: docsTools, maxIterations: 3 }, // the default: cheap and quick
+  profiles: {
+    deep: {
+      description: 'A hard question that needs a thorough, multi-source answer.',
+      config: { model: strongModel, thinking: 'high', maxIterations: 8 },
+    },
+    skeptic: {
+      description: 'Check a claim someone else made; look for what contradicts it.',
+      config: { systemPrompt: 'Assume the claim is wrong until the sources show otherwise.' },
+    },
+  },
+})
+```
+
+- The tool gains an optional `profile` argument, an enum of the names; leaving it
+  out runs the base config. Each profile's `description` is appended to the tool's
+  description, so the parent chooses by *when to use it* — write them that way.
+- A profile's fields are laid **over** the base config, field by field and
+  shallow: a profile's `limits` replaces the base's `limits`, it is not merged
+  into it. Anything in `BrowserAgentConfig` can differ — the model (even another
+  provider), `thinking`, limits, `systemPrompt`, `skills`, `tools`.
+- For a Web Worker subagent the override is `workerConfig` (its model is a
+  serializable `ProviderModelSpec`, and a `credentialRef` is resolved to a key in
+  the main thread for *that profile's* model). Setting `config` on a worker
+  profile, or `workerConfig` on an in-process one, is refused when the tool is
+  created.
+- The choice is bounded by what **you** listed: the parent cannot pick an
+  arbitrary model, so cost stays in the host's hands. An unknown name is a tool
+  error the model can correct, raised before any child starts or is announced.
+- `subagent.start` carries `profile` when one was chosen. Child tokens are
+  charged to the parent as always, whichever profile ran.
+- The child's context is still just `task`. A different context means a profile
+  that changes `systemPrompt`, `skills` or `tools` — the parent cannot hand a
+  child more of its own conversation.
+
 ## Images, PDFs, files and URLs in — and models that can't take them
 
 ```ts
