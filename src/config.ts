@@ -1,4 +1,5 @@
 import type { IStepResult } from './agent/loop-types.js'
+import type { RunPersistence } from './agent/persistence.js'
 import type { PromptCachingSetting } from './caching.js'
 import type { TokenLimits } from './limits.js'
 import {
@@ -92,6 +93,13 @@ export interface BrowserAgentConfig {
    */
   memory?: ContextStore
   sessionId?: string
+  /**
+   * Checkpoint runs so a reload or a crashed tab does not lose finished work:
+   * `new IndexedDBRunStore()` survives a reload, `new MemoryRunStore()` does not.
+   * `run(goal, { resumeFromRunId })` then continues from the last checkpoint —
+   * see `RunSnapshot` for exactly what is, and is not, kept.
+   */
+  persistence?: RunPersistence
 
   /** Hard cap on executed steps incl. replans (default 8). */
   maxIterations?: number

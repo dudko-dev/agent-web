@@ -9,9 +9,10 @@ export const KEYS_STORE = 'keys'
 export const SECRETS_STORE = 'secrets'
 export const SESSIONS_STORE = 'sessions'
 export const FILES_STORE = 'files'
+export const RUNS_STORE = 'runs'
 
-// v1: keys, secrets, sessions. v2: + files (the virtual file system).
-const DB_VERSION = 2
+// v1: keys, secrets, sessions. v2: + files (the virtual file system). v3: + runs (checkpoints).
+const DB_VERSION = 3
 
 let cache = new Map<string, Promise<IDBPDatabase>>()
 
@@ -33,6 +34,7 @@ export const openAgentWebDB = (opts: AgentWebDBOptions = {}): Promise<IDBPDataba
         if (!db.objectStoreNames.contains(SECRETS_STORE)) db.createObjectStore(SECRETS_STORE)
         if (!db.objectStoreNames.contains(SESSIONS_STORE)) db.createObjectStore(SESSIONS_STORE)
         if (!db.objectStoreNames.contains(FILES_STORE)) db.createObjectStore(FILES_STORE)
+        if (!db.objectStoreNames.contains(RUNS_STORE)) db.createObjectStore(RUNS_STORE)
       },
     })
     cache.set(name, p)

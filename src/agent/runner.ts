@@ -47,7 +47,8 @@ import {
   type IStepResult,
   type IUsage,
 } from './loop-types.js'
-import { createPlan } from './planner.js'
+import { resolveResume, type RunSnapshot, type RunStatus } from './persistence.js'
+import { createPlan, type PlanOutcome } from './planner.js'
 import { decideReplan } from './replanner.js'
 import { synthesizeAnswer } from './synthesizer.js'
 import { createLogger } from '../logger.js'
@@ -68,6 +69,12 @@ export interface RunOptions {
   /** Override the config's sessionId for this run. */
   sessionId?: string
   /**
+   * Continue a checkpointed run instead of starting one (needs `persistence.loadRun`). The
+   * saved goal, plan, finished steps and counters win — whatever `goal` is passed, and without
+   * planning again. Attachments are not stored: pass them again if the run needs them.
+   */
+  resumeFromRunId?: string
+  /**
    * Images sent with the goal (pasted screenshots, photos). They reach the
    * planner, the executor and the synthesizer of a vision-capable model; a
    * model known not to take images ends the run at once with
@@ -83,6 +90,8 @@ export interface RunOptions {
 }
 
 export interface RunResult {
+  /** Names this run for `persistence` / `resumeFromRunId`. */
+  runId: string
   goal: string
   final: string
   plan: IPlan
@@ -112,6 +121,18 @@ export interface CompactResult {
   afterTokens: number
   usage: IUsage
 }
+
+/** What `runCore` hands its wrapper so a run is closed out in ONE place, not at every `return`. */
+interface RunTrack {
+  /** Set once the run has a checkpoint: writes `onRunComplete`. */
+  complete?: (result: RunResult | undefined) => Promise<void>
+  /** Set when the run ended on an error rather than a result. */
+  error?: string
+}
+
+const newRunId = (): string =>
+  globalThis.crypto?.randomUUID?.() ??
+  `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
 export interface Agent {
   run(goal: string, opts?: RunOptions): Promise<RunResult>
@@ -290,7 +311,9 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${[...skillNames].join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
   )
 
-  const run = async (goal: string, opts: RunOptions = {}): Promise<RunResult> => {
+  const runCore = async (goal: string, opts: RunOptions, track: RunTrack): Promise<RunResult> => {
+    // Validated BEFORE anything is emitted or spent: a bad id throws to the caller.
+    const resumed = await resolveResume(config.persistence, opts.resumeFromRunId)
     const emit = (event: AgentEvent): void => {
       try {
         opts.onEvent?.(event)
@@ -298,16 +321,20 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         /* a bad handler must not break the run */
       }
     }
-    const text = goal.trim()
-    const sessionId = opts.sessionId ?? cfg.sessionId
-    let usage = emptyUsage()
+    // A resumed run is the SAME run: its goal, session and id come from the checkpoint.
+    const text = (resumed?.goal ?? goal).trim()
+    const sessionId = resumed?.sessionId ?? opts.sessionId ?? cfg.sessionId
+    const runId = resumed?.runId ?? newRunId()
+    const startedAt = resumed?.startedAt ?? Date.now()
+    let usage = resumed ? { ...resumed.usage } : emptyUsage()
     const result: RunResult = {
+      runId,
       goal: text,
       final: '',
-      plan: { thought: '', steps: [] },
-      trace: [],
-      steps: 0,
-      applied: 0,
+      plan: resumed ? resumed.plan : { thought: '', steps: [] },
+      trace: resumed ? [...resumed.trace] : [],
+      steps: resumed ? resumed.trace.length : 0,
+      applied: resumed?.applied ?? 0,
       stopped: false,
       usage,
       skills: [],
@@ -332,16 +359,20 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     }
 
     // ── per-run tool state: skills, discovered tools, call budget, current step
-    const activeSkillNames = new Set<string>()
+    // Restored silently: `skill.activated` already fired in the run that activated them.
+    const activeSkillNames = new Set<string>(
+      (resumed?.skills ?? []).filter((n) => skillNames.has(n)),
+    )
+    result.skills = [...activeSkillNames]
     const activateSkill = (name: string, by: 'plan' | 'tool'): void => {
       if (activeSkillNames.has(name) || !skillNames.has(name)) return
       activeSkillNames.add(name)
       result.skills = [...activeSkillNames]
       emit({ type: 'skill.activated', name, by })
     }
-    const discovered: string[] = []
+    const discovered: string[] = [...(resumed?.discovered ?? [])]
     let currentStep: IPlanStep | undefined
-    const counter = createCallCounter(cfg.maxToolCalls)
+    const counter = createCallCounter(cfg.maxToolCalls, resumed?.toolCalls)
     const builtins: ToolSet = {}
     if (skills.length) {
       Object.assign(
@@ -386,7 +417,19 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       return undefined
     }
 
-    emit({ type: 'run.start', goal: text })
+    emit({
+      type: 'run.start',
+      goal: text,
+      runId,
+      ...(resumed
+        ? {
+            resumed: {
+              completedSteps: resumed.trace.length,
+              remainingSteps: resumed.remaining.length,
+            },
+          }
+        : {}),
+    })
     const images = [...(opts.images ?? []), ...(opts.files ?? [])]
     const refused = images.map(attachmentKind).find((kind) => accepts[kind] === false)
     if (refused) {
@@ -404,7 +447,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     // Read back the session transcript BEFORE appending the current goal, so
     // the planner can resolve references to earlier turns ("make it bigger").
     let history: StoredMessage[] = []
-    if (config.memory) {
+    if (config.memory && !resumed) {
       try {
         history = await config.memory.load(sessionId)
       } catch {
@@ -469,12 +512,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       images: images.length ? images : undefined,
     }
     // Memory is text: an image is remembered by its name, not its pixels.
-    await remember({
-      role: 'user',
-      content: images.length
-        ? `${text}\n[attached: ${images.map((f, i) => f.name ?? `${attachmentKind(f)} ${i + 1}`).join(', ')}]`
-        : text,
-    })
+    if (!resumed)
+      await remember({
+        role: 'user',
+        content: images.length
+          ? `${text}\n[attached: ${images.map((f, i) => f.name ?? `${attachmentKind(f)} ${i + 1}`).join(', ')}]`
+          : text,
+      })
     log.info('run:', text, images.length ? `(+${images.length} image(s))` : '')
 
     const stop = (): RunResult => {
@@ -484,9 +528,11 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     }
 
     try {
-      // 1) PLAN
-      let planned = await createPlan(ctx, text)
-      bumpUsage(planned.usage, 'plan')
+      // 1) PLAN — or, resuming, the plan already made: the planner does not run again.
+      let planned: PlanOutcome = resumed
+        ? { plan: resumed.plan, usage: emptyUsage(), skills: [] }
+        : await createPlan(ctx, text)
+      if (!resumed) bumpUsage(planned.usage, 'plan')
       if (isAborted()) return stop()
 
       // Small models sometimes return an empty plan for a clearly actionable
@@ -522,16 +568,76 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         `plan (${planned.plan.steps.length} steps):`,
         planned.plan.steps.map((s) => s.description),
       )
-      emit({ type: 'plan.created', plan: planned.plan })
-      planned.plan.steps.forEach((step, index) => emit({ type: 'plan.step-added', step, index }))
+      // A consumer attaching mid-resume sees the plan as it stands: what is done, then what is left.
+      const announced: IPlan = resumed
+        ? {
+            thought: planned.plan.thought,
+            steps: [...resumed.trace.map((r) => r.step), ...resumed.remaining],
+          }
+        : planned.plan
+      emit({ type: 'plan.created', plan: announced })
+      announced.steps.forEach((step, index) => emit({ type: 'plan.step-added', step, index }))
       for (const name of planned.skills) activateSkill(name, 'plan')
 
       // 2) EXECUTE → REPLAN
-      let done: string[] = []
-      const findings: string[] = []
-      let remaining: IPlanStep[] = [...planned.plan.steps]
-      let iter = 0
-      let revisions = 0
+      let done: string[] = resumed ? [...resumed.done] : []
+      const findings: string[] = resumed ? [...resumed.findings] : []
+      let remaining: IPlanStep[] = resumed ? [...resumed.remaining] : [...planned.plan.steps]
+      let iter = resumed?.iterations ?? 0
+      let revisions = resumed?.revisions ?? 0
+
+      // ── persistence: checkpoints at iteration boundaries, closed out in one place
+      const buildSnapshot = (status: RunStatus, extra: Partial<RunSnapshot> = {}): RunSnapshot => ({
+        runId,
+        startedAt,
+        status,
+        goal: text,
+        sessionId,
+        plan: planned.plan,
+        // Copies: a store that keeps the object must not watch the loop mutate it.
+        remaining: [...remaining],
+        trace: [...result.trace],
+        done: [...done],
+        findings: [...findings],
+        usage: { ...usage },
+        iterations: iter,
+        revisions,
+        toolCalls: counter.calls,
+        applied: result.applied,
+        skills: [...activeSkillNames],
+        discovered: [...discovered],
+        attachments: images.length,
+        ...extra,
+      })
+      const persist = async (
+        hook: 'onRunStart' | 'onStepComplete' | 'onRunComplete',
+        snapshot: RunSnapshot,
+      ): Promise<void> => {
+        const fn = config.persistence?.[hook]
+        if (!fn) return
+        try {
+          await fn.call(config.persistence, snapshot)
+        } catch (err) {
+          // Observability, not a correctness boundary: a broken store must not end the run.
+          log.warn(`persistence.${hook} threw — the run carries on`, err)
+        }
+      }
+      if (config.persistence) {
+        track.complete = async (res) => {
+          const error = track.error
+          const status: RunStatus = error ? 'failed' : res?.stopped ? 'cancelled' : 'complete'
+          await persist(
+            'onRunComplete',
+            buildSnapshot(status, {
+              ...(res ? { text: res.final } : {}),
+              ...(error ? { error } : {}),
+              completedAt: Date.now(),
+            }),
+          )
+        }
+        // The plan is in hand. A resumed run already announced its start.
+        if (!resumed) await persist('onRunStart', buildSnapshot('executing'))
+      }
       while (remaining.length > 0 && iter < cfg.maxIterations) {
         if (isAborted()) return stop()
         const hit = breach()
@@ -658,6 +764,9 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
             })
           }
         }
+        // The checkpoint: a boundary a resume can pick up from. Not reached after a
+        // `finish` (the run is over) — the closing snapshot covers that.
+        if (config.persistence) await persist('onStepComplete', buildSnapshot('executing'))
       }
       // A limit reached on the very last step is still worth reporting.
       if (!budgetExceeded && remaining.length > 0) {
@@ -732,8 +841,25 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       if (isAborted()) return stop()
       emit({ type: 'error', phase: 'run', error: errMessage(err) })
       result.final = errMessage(err)
+      track.error = errMessage(err)
       return result
     }
+  }
+
+  const run = async (goal: string, opts: RunOptions = {}): Promise<RunResult> => {
+    const track: RunTrack = {}
+    let result: RunResult
+    try {
+      result = await runCore(goal, opts, track)
+    } catch (err) {
+      // Unreachable by design (runCore reports its own failures), but a run with a checkpoint
+      // must still be closed out, not left looking as if it is executing.
+      track.error = err instanceof Error ? err.message : String(err)
+      await track.complete?.(undefined)
+      throw err
+    }
+    await track.complete?.(result)
+    return result
   }
 
   const compact = async (o: CompactOptions = {}): Promise<CompactResult> => {

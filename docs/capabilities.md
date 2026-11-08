@@ -17,6 +17,7 @@ implements the same features with the same field and event names.
 - [Subagents (in-process or Web Workers)](#subagents-in-process-or-web-workers)
 - [Images, PDFs, files and URLs in](#images-pdfs-files-and-urls-in--and-models-that-cant-take-them)
 - [Virtual file system](#virtual-file-system)
+- [Resuming an interrupted run](#resuming-an-interrupted-run)
 - [Autonomy](#autonomy)
 - [Event reference](#event-reference)
 
@@ -448,6 +449,56 @@ read-only (no consent prompt in `ask-writes`); `fs_write` / `fs_delete` are
 not; `createFileTools(vfs, { readOnly: true })` mounts only the readers. The
 files live in the shared IndexedDB database (`files` store, schema v2 — an
 existing v1 database is upgraded in place).
+
+## Resuming an interrupted run
+
+A reload, a crashed tab or a killed worker normally loses a run — including the steps
+that already ran. `persistence` checkpoints it:
+
+```ts
+import { createAgent, IndexedDBRunStore } from '@dudko.dev/agent-web'
+
+const runs = new IndexedDBRunStore()
+const agent = await createAgent({ model, tools, persistence: runs, sessionId: chatId })
+const result = await agent.run('Triage the new tickets') // result.runId names the run
+
+// After a reload:
+const unfinished = await runs.latestResumable(chatId)
+if (unfinished) await agent.run('', { resumeFromRunId: unfinished.runId })
+```
+
+- A checkpoint is written when the plan is in hand and at the end of **every
+  iteration**. Resuming picks up at that boundary: the planner does not run again, a
+  finished step is not repeated, and the saved goal, plan, trace, step log, findings,
+  skills, discovered tools and counters all carry over. So `maxIterations`,
+  `maxRevisions` and `maxToolCalls` are per **run**, not per page load, and token usage
+  keeps adding up. The goal you pass to `run()` when resuming is ignored — the saved one
+  is the run's.
+- `run.start` carries the `runId` and, on a resume, how far the run had got
+  (`resumed: { completedSteps, remainingSteps }`); `plan.created` then shows the plan
+  as it stands — finished steps first, then what is left.
+- A stopped run (`cancelled`) and a failed one can be resumed; a `complete` one cannot.
+  `IndexedDBRunStore` drops a completed run's snapshot (`keepCompleted: true` keeps it
+  as an audit trail); `MemoryRunStore` does the same but does not survive a reload.
+- The hooks are `onRunStart`, `onStepComplete`, `onRunComplete` and `loadRun` — the
+  names the Node package uses — so a store of your own is four methods. A hook that
+  throws is logged and the run carries on: persistence is observability, not a
+  correctness boundary. The snapshot's field names follow this package's `run(goal)`
+  (`goal`, not Node's `input`).
+- The database gains a `runs` object store (schema v3); an existing database upgrades in
+  place and keeps its data.
+
+What a resume does **not** give you:
+
+- **A step in flight when the page died runs again from its start.** For a read that is
+  free; for a write it may apply twice, so give tools with side effects idempotency — or
+  keep the consent gate on: a resumed run goes through `toolApproval` like any other.
+- **Attachments are not stored.** Pass `images` / `files` to `run()` again if the run
+  needs them; the snapshot only records how many there were.
+- **A snapshot holds the whole trace**, tool outputs included, and is rewritten at each
+  checkpoint. For tools that return megabytes, trim in your store's `onStepComplete`.
+- Nothing resumes by itself: your app decides when to look for an unfinished run and
+  whether to offer it.
 
 ## Autonomy
 

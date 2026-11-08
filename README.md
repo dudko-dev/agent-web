@@ -350,7 +350,10 @@ With more than 40 tools (several MCP servers) the executor switches to **tool
 search**: it starts each step small and calls `find_tools` to activate what it
 needs. Subagents are tools too — `createSubagentTool({ config })` runs a child
 agent in-process, `createSubagentTool({ worker, workerConfig })` isolates it in a
-Web Worker served by `serveSubagentWorker()`. Details, defaults and events:
+Web Worker served by `serveSubagentWorker()`. Give `persistence` a store
+(`new IndexedDBRunStore()`) and a run interrupted by a reload or a crash resumes from its
+last checkpoint with `run('', { resumeFromRunId })` — the planner does not run again and
+no finished step is repeated. Details, defaults and events:
 **[docs/capabilities.md](docs/capabilities.md)**.
 
 ## Configuration (highlights)

@@ -143,6 +143,7 @@ export {
   SECRETS_STORE,
   SESSIONS_STORE,
   FILES_STORE,
+  RUNS_STORE,
 } from './storage/db.js'
 export type { AgentWebDBOptions } from './storage/db.js'
 
@@ -193,6 +194,11 @@ export { MemoryStore } from './memory/store.js'
 export type { ContextStore, StoredMessage } from './memory/store.js'
 export { IndexedDBStore } from './memory/sessions.js'
 export type { IndexedDBStoreOptions } from './memory/sessions.js'
+// Run persistence: checkpoint a run, resume it after a reload or a crash.
+export { resolveResume } from './agent/persistence.js'
+export type { RunPersistence, RunSnapshot, RunStatus } from './agent/persistence.js'
+export { IndexedDBRunStore, MemoryRunStore } from './memory/runs.js'
+export type { IndexedDBRunStoreOptions, RunStoreOptions } from './memory/runs.js'
 export {
   compressHistory,
   compactHistory,
