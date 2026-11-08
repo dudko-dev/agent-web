@@ -30,6 +30,16 @@
         "default": "./dist/mcp.cjs"
       }
     },
+    "./webmcp": {
+      "import": {
+        "types": "./dist/webmcp.d.ts",
+        "default": "./dist/webmcp.js"
+      },
+      "require": {
+        "types": "./dist/webmcp.d.cts",
+        "default": "./dist/webmcp.cjs"
+      }
+    },
     "./bundle": {
       "types": "./dist/index.d.ts",
       "import": "./dist/agent-web.js"

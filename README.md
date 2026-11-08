@@ -293,6 +293,37 @@ browser's silence: it re-probes the endpoint with a plain request and, if that
 gets through, says which header is being refused. `diagnoseMcpCors(url)` is
 exported so a UI can show the same sentence.
 
+## Optional: WebMCP — a page's tools, both ways
+
+[WebMCP](https://webmachinelearning.github.io/webmcp/) lets a page register named, typed tools
+(`document.modelContext.registerTool(tool, { signal })`) that a browser's agent — Chrome's origin
+trial, Edge, an extension, an in-page agent — can discover and call. The `./webmcp` subpath bridges it
+and an agent's `ToolSet`, with no extra dependency and as a no-op where the browser has no WebMCP:
+
+```ts
+import { connectWebMcp, registerWebMcpTools } from '@dudko.dev/agent-web/webmcp'
+
+// 1. Publish the tools your in-page agent uses, so any agent of the browser can drive them too.
+//    One definition, two consumers; withdrawn when the signal aborts or unregister() is called.
+const reg = await registerWebMcpTools(tools, {
+  prefix: 'myapp_', // WebMCP tool names are shared with everything else on the page
+  except: ['debug_dump'],
+  consequential: ['clear_page'], // annotated consequentialHint: true
+  signal: controller.signal,
+})
+// readOnly: true tools (defineTool) are annotated readOnlyHint: true
+
+// 2. Use the tools a page has registered as the agent's own.
+const web = await connectWebMcp({ onToolsChanged: () => rebuildAgent() })
+const agent = await createAgent({ model, tools: { ...tools, ...web?.tools } })
+```
+
+Both generations of the browser API are handled: the current one on `document.modelContext` (a
+tool is withdrawn by aborting its signal) and Chrome's early preview on `navigator.modelContext`
+(`unregisterTool(name)`). Results are returned as text content (structured results as JSON), as
+WebMCP clients read them. Validate strictly inside your `execute`, loosely in the schema: a
+rejected call should be a result the calling agent can read, not a stalled tool.
+
 ## Thinking, limits, consent, skills, subagents
 
 ```ts

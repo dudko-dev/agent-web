@@ -16,16 +16,19 @@ const OPTIONAL_PEERS = [
 ]
 
 export default defineConfig([
-  // Two entry points:
-  //   .      → the core agent (no MCP, no node:* — safe for any browser bundle)
-  //   ./mcp  → the optional HTTP MCP connector, kept separate so
-  //            @modelcontextprotocol/sdk never enters the core bundle.
+  // Three entry points:
+  //   .        → the core agent (no MCP, no node:* — safe for any browser bundle)
+  //   ./mcp    → the optional HTTP MCP connector, kept separate so
+  //              @modelcontextprotocol/sdk never enters the core bundle.
+  //   ./webmcp → the optional bridge to the browser's WebMCP API (a page's tools
+  //              published from / consumed as an agent ToolSet); no extra dependency.
   // All model providers, WebLLM, and the MCP SDK are external optional peers —
   // consumers install only what they use; we import them dynamically at runtime.
   {
     entry: {
       index: 'src/index.ts',
       mcp: 'src/mcp/index.ts',
+      webmcp: 'src/webmcp/index.ts',
     },
     format: ['esm', 'cjs'],
     dts: true,
