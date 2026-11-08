@@ -99,7 +99,12 @@ const NAME = /^[A-Za-z0-9_.-]{1,128}$/
 
 /** A tool's result in the shape WebMCP clients read: text content, structured results as JSON. */
 const asContent = (result: unknown) => ({
-  content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
+  // JSON.stringify(undefined) is undefined, not a string — and a tool that does its work and
+  // returns nothing is the common case (a clear, a save), so without this the result WebMCP
+  // publishes has `text: undefined` in it and is not a valid text content part.
+  content: [
+    { type: 'text', text: typeof result === 'string' ? result : (JSON.stringify(result) ?? '') },
+  ],
 })
 
 /** AI SDK 7 lets a tool's description depend on the run's context; WebMCP needs a plain string. */
@@ -132,11 +137,22 @@ export const toWebMcpTools = async (
     const name = `${options.prefix ?? ''}${key}`
     if (!NAME.test(name) || typeof t.execute !== 'function') continue
     const execute = t.execute
+    // A dynamic description is a function this module calls with no run context, and a schema can
+    // refuse to convert. Either throwing would abandon every tool after it in the loop — including
+    // the ones that are fine — so one bad tool is dropped the same way an unpublishable name is.
+    let description: string
+    let inputSchema: Record<string, unknown>
+    try {
+      description = describe(t) || key
+      inputSchema = await inputSchemaOf(t)
+    } catch {
+      continue
+    }
     out.push({
       name,
       title: key.replace(/[_-]+/g, ' '),
-      description: describe(t) || key,
-      inputSchema: await inputSchemaOf(t),
+      description,
+      inputSchema,
       annotations: {
         readOnlyHint: (t as AgentTool).readOnly === true,
         ...(options.consequential?.includes(key) ? { consequentialHint: true } : {}),
@@ -224,6 +240,25 @@ export interface ConnectedWebMcp {
   close: () => void
 }
 
+// WebMCP's namespace is wider than a provider's: the spec allows `.` and up to 128 characters
+// (see NAME above), while providers take ^[a-zA-Z0-9_-]{1,64}$ and reject the WHOLE request when a
+// tool name breaks it — so one page tool named "editor.clear" would fail every run of an agent that
+// merged this set, not just that one call. The sibling MCP connector maps names for the same
+// reason; dispatch is unaffected because executeTool is handed the page's own tool object.
+const PROVIDER_MAX_NAME = 64
+const toProviderName = (name: string, taken: Record<string, unknown>): string => {
+  const base = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, PROVIDER_MAX_NAME) || 'tool'
+  if (!Object.hasOwn(taken, base)) return base
+  // Suffix rather than drop: two page tools that map onto one key would otherwise make the second
+  // disappear from the model's view, which is a silent capability loss.
+  for (let n = 2; n < 100; n++) {
+    const suffix = `_${n}`
+    const candidate = base.slice(0, PROVIDER_MAX_NAME - suffix.length) + suffix
+    if (!Object.hasOwn(taken, candidate)) return candidate
+  }
+  return ''
+}
+
 const parseSchema = (s: RegisteredWebMcpTool['inputSchema']): Record<string, unknown> => {
   if (!s) return { type: 'object', properties: {} }
   if (typeof s !== 'string') return s
@@ -288,12 +323,17 @@ export const connectWebMcp = async (
           readResult(await context.executeTool!(rt, input, { signal: opts?.abortSignal })),
       }) as AgentTool
       if (rt.annotations?.readOnlyHint) t.readOnly = true
-      tools[rt.name] = t
+      const key = toProviderName(rt.name, tools)
+      if (key) tools[key] = t
     }
   }
   await refresh()
   const onChange = () => {
-    void refresh().then(() => options.onToolsChanged?.(tools))
+    // A rejected refresh here has nobody to catch it: the page's `toolchange` fired, not us. The
+    // module avoids unhandled rejections on the register side too.
+    void refresh()
+      .then(() => options.onToolsChanged?.(tools))
+      .catch(() => undefined)
   }
   context.addEventListener?.('toolchange', onChange)
   return {

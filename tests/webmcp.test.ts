@@ -248,3 +248,111 @@ test('connectWebMcp: filter skips tools; plain-text and unparsable results come 
     'plain words',
   )
 })
+
+// ── Where WebMCP's namespace is wider than a provider's ─────────────────────
+// WebMCP allows `.` and 128 characters; providers take ^[a-zA-Z0-9_-]{1,64}$
+// and reject the whole request, so an unmapped page name does not fail its own
+// call — it fails every run of an agent that merged the set.
+
+test('connectWebMcp: page names are mapped into what a provider accepts', async () => {
+  const long = 'x'.repeat(100)
+  const ctx = {
+    registerTool: () => {},
+    getTools: async () => [
+      { name: 'editor.clear', description: 'dotted' },
+      { name: long, description: 'too long' },
+      { name: 'plain_tool', description: 'already fine' },
+    ],
+    executeTool: async () => 'ok',
+  }
+  const web = await connectWebMcp({ context: ctx as never })
+  const keys = Object.keys(web!.tools)
+  for (const k of keys) {
+    assert.match(k, /^[a-zA-Z0-9_-]+$/, `${k} uses only characters providers accept`)
+    assert.ok(k.length <= 64, `${k} is within the 64-char cap`)
+  }
+  assert.ok(keys.includes('editor_clear'), 'the dot became an underscore')
+  assert.ok(keys.includes('plain_tool'), 'a name that was already fine is untouched')
+  assert.equal(keys.length, 3, 'nothing was dropped')
+})
+
+test('connectWebMcp: two page names that map onto one key both survive', async () => {
+  const ctx = {
+    registerTool: () => {},
+    getTools: async () => [{ name: 'a.b' }, { name: 'a-b' }, { name: 'a_b' }],
+    executeTool: async (t: { name: string }) => `ran ${t.name}`,
+  }
+  const web = await connectWebMcp({ context: ctx as never })
+  assert.equal(Object.keys(web!.tools).length, 3, 'a collision suffixes instead of dropping')
+  // Dispatch still reaches the right page tool: executeTool gets the page's own object.
+  const results = await Promise.all(
+    Object.values(web!.tools).map((t) =>
+      (t.execute as (i: unknown, o: unknown) => Promise<unknown>)({}, {}),
+    ),
+  )
+  assert.deepEqual(results.sort(), ['ran a-b', 'ran a.b', 'ran a_b'])
+})
+
+test('toWebMcpTools: a tool that returns nothing still publishes valid text content', async () => {
+  const defs = await toWebMcpTools({
+    clear_page: defineTool({
+      description: 'Clear the page.',
+      inputSchema: z.object({}),
+      execute: async () => undefined,
+    }),
+  })
+  const result = (await defs[0].execute({}, {})) as { content: { type: string; text: string }[] }
+  assert.equal(typeof result.content[0].text, 'string', 'text is a string, not undefined')
+})
+
+test('toWebMcpTools: one tool that cannot be described does not take the others with it', async () => {
+  const defs = await toWebMcpTools({
+    good_one: defineTool({
+      description: 'Fine.',
+      inputSchema: z.object({}),
+      execute: async () => 'ok',
+    }),
+    bad_one: {
+      description: () => {
+        throw new Error('needs a run context')
+      },
+      inputSchema: z.object({}),
+      execute: async () => 'ok',
+    } as never,
+    also_good: defineTool({
+      description: 'Also fine.',
+      inputSchema: z.object({}),
+      execute: async () => 'ok',
+    }),
+  })
+  assert.deepEqual(
+    defs.map((d) => d.name),
+    ['good_one', 'also_good'],
+    'the throwing tool is skipped; the one after it is still published',
+  )
+})
+
+test('connectWebMcp: a failing refresh on toolchange does not reject unhandled', async () => {
+  let fail = false
+  const listeners: (() => void)[] = []
+  const ctx = {
+    registerTool: () => {},
+    getTools: async () => {
+      if (fail) throw new Error('the page went away')
+      return [{ name: 'a_tool' }]
+    },
+    executeTool: async () => 'ok',
+    addEventListener: (_t: string, l: () => void) => listeners.push(l),
+    removeEventListener: () => {},
+  }
+  const web = await connectWebMcp({ context: ctx as never })
+  const unhandled: unknown[] = []
+  const onUnhandled = (e: unknown) => unhandled.push(e)
+  process.on('unhandledRejection', onUnhandled)
+  fail = true
+  listeners[0]?.()
+  await new Promise((r) => setTimeout(r, 50))
+  process.off('unhandledRejection', onUnhandled)
+  assert.deepEqual(unhandled, [], 'the rejected refresh was caught')
+  assert.deepEqual(Object.keys(web!.tools), ['a_tool'], 'the previous tools are left intact')
+})
