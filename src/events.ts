@@ -96,12 +96,12 @@ export type AgentEvent =
   | { type: 'subagent.complete'; id: string; name: string; text: string; usage: IUsage }
   /** `stopped` is set when the user stopped this subagent (`RunControl.stopSubagent`), as opposed to it failing. */
   | { type: 'subagent.error'; id: string; name: string; error: string; stopped?: boolean }
-  /** A message sent with `RunControl.send` is waiting for the next boundary. */
   /**
    * A request of the `web_fetch` tool, allowed or refused by the egress policy. `url` is origin and
    * path only (a query string can carry a secret).
    */
   | { type: 'egress.request'; url: string; allowed: boolean; status?: number; reason?: string }
+  /** A message sent with `RunControl.send` is waiting for the next boundary. */
   | { type: 'message.queued'; id: string; text: string }
   /**
    * The message reached the model. `round` = between tool-calling rounds inside a step, so

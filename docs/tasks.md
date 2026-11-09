@@ -2,7 +2,7 @@
 
 Status of the work. See [design.md](./design.md) for the architecture,
 [providers.md](./providers.md) for the provider matrix, and
-[security.md](./security.md) for the token vault.
+[security.md](./security.md) for the token vault, egress and learning.
 
 ## Done — universal rebuild (on the Vercel AI SDK)
 
@@ -57,26 +57,30 @@ Status of the work. See [design.md](./design.md) for the architecture,
 ## Next
 
 
-- [ ] **`./react` subpath** — a `useAgent` hook (kept out of core to stay
-      UI-agnostic).
-- [ ] **Streaming structured plan** — surface `plan.thought-delta` /
-      `plan.step-added` from a streamed `generateObject`.
+- [x] **React bindings** — shipped as a separate package,
+      [`@dudko.dev/agent-web-react`](https://www.npmjs.com/package/@dudko.dev/agent-web-react)
+      (kept out of core to stay UI-agnostic).
+- [x] **Streaming structured plan** — `plan.thought-delta` / `plan.step-added`
+      from a streamed structured plan.
 - [ ] **Model-load events** — wire WebLLM download progress to `model.load`
       automatically (today: pass `initProgressCallback` via `providerOptions`).
-- [ ] **AI SDK v7** — bump once `@browser-ai/web-llm` supports the v7 provider spec.
+- [x] **AI SDK v7** — the package tracks `ai` v7 with `@browser-ai/*` v3.
 - [x] **MCP OAuth** — `authProvider` + `BrowserOAuthProvider`: DCR (RFC 7591),
       PKCE, vault-stored tokens, refresh on 401, proactive refresh on connect.
 - [x] **MCP niceties** — `tools/list_changed` notification + `refreshServer()`.
       (Allow/deny filtering stays a host concern: `tools` is a plain object.)
-- [ ] **Examples** — a vanilla-JS demo and a React demo (cloud BYOK + local WebLLM).
+- [x] **React demo** — cloud BYOK, local WebLLM and your own MCP servers
+      ([live](https://dudko-dev.github.io/agent-web-react/)).
+- [ ] **Vanilla-JS example** — a demo without a framework.
 - [ ] **OPFS/Blob tool outputs** — optional spill target for binary MCP results.
 
 ## Non-goals
 
 - Built-in UI (chat panel, components) — belongs in host apps.
 - Domain-specific tools — hosts register their own via `defineTool`.
-- stdio MCP, filesystem sandbox, run persistence/resume, OpenTelemetry — Node-only
-  concerns that live in the sibling package `@dudko.dev/agent`.
+- stdio MCP, filesystem sandbox, OpenTelemetry — Node-only concerns that live in
+  the sibling package `@dudko.dev/agent`. (Run persistence/resume is NOT one of
+  them: the browser has it too, over IndexedDB.)
 - Shipping shared/app-owned API keys to the client — use a proxy or the gateway
   (see [security.md](./security.md)).
 
@@ -108,3 +112,27 @@ Status of the work. See [design.md](./design.md) for the architecture,
       or from a provider refusal.
 - [x] **Virtual file system** — `VirtualFileSystem` (IndexedDB / memory) +
       `createFileTools` (`fs_list` / `fs_read` / `fs_write` / `fs_delete`).
+
+## Done — later additions (see [capabilities.md](./capabilities.md))
+
+- [x] **Resume** — `persistence` (`IndexedDBRunStore` / `MemoryRunStore`) and
+      `run(goal, { resumeFromRunId })`, with the same hook names as the Node sibling.
+- [x] **Steering** — `RunControl`: `send()` a message to a running agent (delivered
+      at the next round / step / final boundary, the replanner re-checks the plan),
+      `stopSubagent()`; `undelivered` returns what never reached the model.
+- [x] **Subagent profiles** — the parent picks a named profile (model, params,
+      context) per call.
+- [x] **WebMCP** — the `./webmcp` subpath publishes a `ToolSet` to the page's model
+      context and consumes the tools a page registered.
+- [x] **Egress** — `egress` / `web_fetch`: off by default, host lists, IP-literal
+      and internal-name refusal, no ambient credentials, redirects fail by default;
+      the same policy shape as the server's `createSafeFetch`.
+- [x] **Learning** — `learning`: `save_skill` / `forget_skill`, lessons are skills
+      (`VfsSkillStore` keeps them across sessions), secret scan, caps, provenance.
+- [x] **Compaction on the whole context** — the fixed prompt, transcript and step
+      log are judged together against 85% of the window, with a calibrated
+      (deliberately high) token estimate.
+- [x] **Usage** — `agent.usage` / `agent.sessionUsage()`, counted as each `usage`
+      event arrives, failed attempts and subagents included.
+- [x] **Window-derived caps** — per-call output caps default to shares of the
+      model's window (`resolveBudgets`).
