@@ -83,6 +83,7 @@ export const executeStep = async (
     skills: ctx.skills?.length ? renderSkillIndex(ctx.skills) : undefined,
     activeSkills: active.length ? renderActiveSkills(active) : undefined,
     searchMode: searchMode && Boolean(ctx.tools[FIND_TOOLS_NAME]),
+    updates: ctx.userUpdates?.(),
   })
 
   const loop = await runToolLoop(ctx.executorModel, {
@@ -97,6 +98,7 @@ export const executeStep = async (
     describeTools: (names) => catalogFor(ctx, names),
     maxSteps: ctx.config.maxStepsPerTask,
     shouldStop: ctx.overBudget,
+    ...(ctx.takeRoundUpdates ? { takeUpdates: ctx.takeRoundUpdates } : {}),
     maxOutputTokens: ctx.config.budgets.executor,
     temperature: ctx.config.temperature,
     abortSignal: ctx.signal,

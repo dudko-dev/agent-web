@@ -36,7 +36,8 @@ export type AgentEvent =
   | { type: 'step.tool-call'; step: IPlanStep; name: string; input: unknown }
   | { type: 'step.tool-result'; step: IPlanStep; name: string; output: unknown; ok: boolean }
   | { type: 'step.complete'; step: IPlanStep; result: IStepResult }
-  | { type: 'replan.decision'; mode: ReplanMode; reason: string }
+  /** `byUser`: the replanner ran because the user sent a message (`RunControl.send`), not because a step failed. */
+  | { type: 'replan.decision'; mode: ReplanMode; reason: string; byUser?: boolean }
   | { type: 'final.text-delta'; delta: string }
   /** The synthesizer's streamed thoughts. */
   | { type: 'final.reasoning-delta'; delta: string }
@@ -80,7 +81,17 @@ export type AgentEvent =
   /** An event of a running subagent, forwarded verbatim. */
   | { type: 'subagent.event'; id: string; name: string; event: AgentEvent }
   | { type: 'subagent.complete'; id: string; name: string; text: string; usage: IUsage }
-  | { type: 'subagent.error'; id: string; name: string; error: string }
+  /** `stopped` is set when the user stopped this subagent (`RunControl.stopSubagent`), as opposed to it failing. */
+  | { type: 'subagent.error'; id: string; name: string; error: string; stopped?: boolean }
+  /** A message sent with `RunControl.send` is waiting for the next boundary. */
+  | { type: 'message.queued'; id: string; text: string }
+  /**
+   * The message reached the model. `round` = between tool-calling rounds inside a step, so
+   * the rest of that step can act on it (the replanner weighs it at the end of the step);
+   * `step` = at a step boundary, where it forces the replanner to look at the plan;
+   * `final` = just before the answer is written.
+   */
+  | { type: 'message.delivered'; id: string; text: string; at: 'round' | 'step' | 'final' }
   | { type: 'stopped' }
   | { type: 'error'; phase: Phase | 'run'; error: string }
 

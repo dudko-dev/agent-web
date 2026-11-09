@@ -62,6 +62,12 @@ export interface RunSnapshot {
   discovered: string[]
   /** How many images/files the run was given (their bytes are not kept). */
   attachments: number
+  /**
+   * What the user said while the run was going (`RunControl.send`), in order, and whether the
+   * replanner has already weighed each. A resumed run keeps them: otherwise it would forget a
+   * correction the user had already made.
+   */
+  userUpdates?: { text: string; reconciled: boolean }[]
   /** Final answer (status `complete`). */
   text?: string
   /** What ended the run (status `failed`). */

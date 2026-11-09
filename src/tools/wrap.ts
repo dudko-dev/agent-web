@@ -1,5 +1,6 @@
 import { asSchema, type Tool, type ToolSet } from 'ai'
 import type { IPlanStep, IUsage } from '../agent/loop-types.js'
+import type { RunControlPort } from '../agent/control.js'
 import type { AgentEvent } from '../events.js'
 import { ToolBudgetError } from '../limits.js'
 import {
@@ -27,6 +28,8 @@ export interface ToolRunContext {
    * tool a subagent calls). Resolves when allowed, throws ToolDeniedError.
    */
   approve: (toolName: string, input: unknown, readOnly: boolean) => Promise<void>
+  /** The run's control, when the host passed one: subagents register here so they can be listed and stopped. */
+  control?: RunControlPort
 }
 
 /** Read the run context the agent passes to a tool's execute (undefined outside a run). */
@@ -86,6 +89,8 @@ export interface WrapToolsOptions {
   /** Called before each counted call; throw to refuse it. */
   countCall: () => void
   maxToolOutputChars: number
+  /** The run's control, handed to tools through their run context. */
+  control?: RunControlPort
 }
 
 /**
@@ -132,6 +137,7 @@ export const wrapToolsForRun = (tools: ToolSet, o: WrapToolsOptions): ToolSet =>
             signal: o.signal,
             addUsage: o.addUsage,
             approve: (toolName, toolInput, ro) => gate(toolName, toolInput, ro),
+            ...(o.control ? { control: o.control } : {}),
           }
           return execute.call(t, input, { ...(options as object), agentRun })
         }

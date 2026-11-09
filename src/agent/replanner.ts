@@ -27,8 +27,11 @@ export const decideReplan = async (
   goal: string,
   done: string[],
   remaining: string[],
+  /** How many of the user's latest messages (`ctx.userUpdates()`) the plan has not been weighed against yet. */
+  newUpdates = 0,
 ): Promise<ReplanOutcome> => {
   const state = await ctx.state()
+  const updates = ctx.userUpdates?.()
   const active = ctx.activeSkills?.() ?? []
   const commonFor = (mode: ToolCallMode) => {
     const parts = ctx.prompts.replanner({
@@ -38,6 +41,7 @@ export const decideReplan = async (
       remaining,
       mode,
       activeSkills: active.length ? renderActiveSkills(active) : undefined,
+      ...(updates?.length ? { updates, newUpdates } : {}),
     })
     return {
       ...stageCall(ctx, 'replanner', parts.system),

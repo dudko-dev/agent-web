@@ -11,6 +11,7 @@ import {
 import { addUsage, BLOCKER, emptyUsage, type IToolCall, type IUsage } from '../agent/loop-types.js'
 import { withRollingBreakpoint, type ResolvedCaching } from '../caching.js'
 import { parseExecutorResponse } from '../parse.js'
+import { renderUserMessages } from '../prompts.js'
 import type { ProviderOptionsMap, ThinkingLevel } from '../thinking.js'
 import { dispatch } from '../tools/prompted.js'
 import {
@@ -70,6 +71,13 @@ export interface ToolLoopOptions {
   caching?: ResolvedCaching
   /** Clear the oldest tool results once the loop's context grows past a threshold. */
   clearToolResults?: ToolResultClearing
+  /**
+   * Called at every round boundary — after a round's tool results, right before the model
+   * is called again — for what the user said in the meantime. A non-empty answer is shown to
+   * the model as a new user turn (so it can act on it within this call). Never called before
+   * the first round, and not at all once the model has stopped calling tools.
+   */
+  takeUpdates?: () => string[]
   callbacks?: ToolLoopCallbacks
 }
 
@@ -128,6 +136,7 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
     ? createToolResultClearer(opts.clearToolResults, opts.callbacks?.onToolResultsCleared)
     : undefined
   const editMessages = caching || clear
+  const steered = opts.takeUpdates
 
   const result = streamText({
     model,
@@ -136,14 +145,27 @@ const runNative = async (model: LanguageModel, opts: ToolLoopOptions): Promise<T
     // Before every round: re-read the active set so tools activated mid-call
     // (find_tools) become callable; clear stale tool results; move the cache
     // breakpoint to the newest message.
-    ...(dynamic || editMessages
+    ...(dynamic || editMessages || steered
       ? {
-          prepareStep: ({ messages }: { messages: ModelMessage[] }) => {
-            let next = clear ? clear(messages) : messages
+          prepareStep: ({
+            messages,
+            stepNumber,
+          }: {
+            messages: ModelMessage[]
+            stepNumber: number
+          }) => {
+            // What the user said since the last round goes in as a user turn after the
+            // tool results (providers fold it into the same turn as the results). An override
+            // carries forward to the later rounds, so it is added once.
+            const said = steered && stepNumber > 0 ? steered() : []
+            let next: ModelMessage[] = said.length
+              ? [...messages, { role: 'user', content: renderUserMessages(said) }]
+              : messages
+            if (clear) next = clear(next)
             if (caching) next = withRollingBreakpoint(next, caching)
             return {
               ...(dynamic ? { activeTools: activeOf(opts) } : {}),
-              ...(editMessages ? { messages: next } : {}),
+              ...(editMessages || said.length ? { messages: next } : {}),
             }
           },
         }
@@ -209,14 +231,14 @@ const asJson = (value: unknown): string => {
 }
 
 /** One round's results + the continue-or-finish contract for the next round. */
-const toolResultsPrompt = (results: IToolCall[], newTools: string): string => {
+const toolResultsPrompt = (results: IToolCall[], newTools: string, said: string[]): string => {
   const lines = results.map(
     (r) =>
       `- ${r.name} ${clip(asJson(r.input), 160)} → ${r.ok ? 'ok' : 'FAILED'}: ${clip(asJson(r.output), 400)}`,
   )
   return `TOOL RESULTS:
 ${lines.join('\n')}
-${newTools ? `\nTOOLS NOW AVAILABLE (call them by these exact names):\n${newTools}\n` : ''}
+${newTools ? `\nTOOLS NOW AVAILABLE (call them by these exact names):\n${newTools}\n` : ''}${said.length ? `\n${renderUserMessages(said)}\n` : ''}
 Continue THIS step using the results above. Reply with a single JSON object, nothing else:
 { "reply": string, "actions": [ { "tool": string, "args": object } ] }
 - If the step is now complete: "actions": [] and a short outcome in "reply".
@@ -316,6 +338,7 @@ const runPrompted = async (
       content: toolResultsPrompt(
         results,
         added.length && opts.describeTools ? opts.describeTools(added) : '',
+        opts.takeUpdates?.() ?? [],
       ),
     })
   }

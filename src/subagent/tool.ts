@@ -286,6 +286,9 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
   ): Promise<ChildOutcome> => {
     if (signal?.aborted) throw abortError()
     const [config, proxied] = await Promise.all([workerConfigFor(profile), proxiedSpecs()])
+    // Stopped while the config was being resolved (a credential read, the schemas): the
+    // abort event has already fired, so a listener added now would wait for nothing.
+    if (signal?.aborted) throw abortError()
     const worker = (opts.worker as () => WorkerLike)()
     return new Promise<ChildOutcome>((resolve, reject) => {
       let settled = false
@@ -393,6 +396,7 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
       parentSignal?.addEventListener('abort', onParentAbort, { once: true })
       if (parentSignal?.aborted) controller.abort()
       let timedOut = false
+      let stoppedByUser = false
       const timer =
         opts.timeoutMs && opts.timeoutMs > 0
           ? setTimeout(() => {
@@ -407,6 +411,20 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
         task,
         ...(profile ? { profile: profileName } : {}),
       })
+      // Listed in the run's control from here, so the host can stop THIS child on its own.
+      const unregister = runCtx?.control?.registerSubagent(
+        {
+          id,
+          name: opts.name,
+          task,
+          ...(profile ? { profile: profileName } : {}),
+          startedAt: Date.now(),
+        },
+        () => {
+          stoppedByUser = true
+          controller.abort()
+        },
+      )
       try {
         const forward = (event: AgentEvent) =>
           emit({ type: 'subagent.event', id, name: opts.name, event })
@@ -414,6 +432,11 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
         const run = opts.worker ? runInWorker : runInProcess
         const out = await run(task, controller.signal, forward, hostTools, profile).catch(
           (err: unknown) => {
+            // The user's stop wins over a deadline that fired at the same moment.
+            if (stoppedByUser)
+              throw new Error(
+                `subagent "${opts.name}" was stopped by the user before it finished — carry on without its result, or take another approach`,
+              )
             if (timedOut)
               throw new Error(`subagent "${opts.name}" timed out after ${opts.timeoutMs} ms`)
             throw err
@@ -428,9 +451,11 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
           id,
           name: opts.name,
           error: err instanceof Error ? err.message : String(err),
+          ...(stoppedByUser ? { stopped: true } : {}),
         })
         throw err
       } finally {
+        unregister?.()
         if (timer !== undefined) clearTimeout(timer)
         parentSignal?.removeEventListener('abort', onParentAbort)
         release()

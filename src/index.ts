@@ -1,6 +1,9 @@
 // ── Agent ──────────────────────────────────────────────────────────────────
 export { createAgent } from './agent/runner.js'
 export type { Agent, CompactOptions, CompactResult, RunOptions, RunResult } from './agent/runner.js'
+// Steer a run while it goes: send a message, stop one subagent.
+export { createRunControl } from './agent/control.js'
+export type { RunControl, SubagentInfo } from './agent/control.js'
 export type { IPlan, IPlanStep, IStepResult, IToolCall, IUsage } from './agent/loop-types.js'
 export { PlanSchema, PlanStepSchema, ReplanSchema } from './agent/schemas.js'
 export type { PlanShape, ReplanShape } from './agent/schemas.js'

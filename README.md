@@ -355,7 +355,9 @@ chooses, per call, between named variants of the same subagent — another model
 thinking level, limits or system prompt. Give `persistence` a store
 (`new IndexedDBRunStore()`) and a run interrupted by a reload or a crash resumes from its
 last checkpoint with `run('', { resumeFromRunId })` — the planner does not run again and
-no finished step is repeated. Details, defaults and events:
+no finished step is repeated. `createRunControl()` steers a run that is going: `send()`
+puts a message in front of the model at the next boundary (the replanner re-checks the plan
+against it), `stopSubagent(id)` stops one subagent. Details, defaults and events:
 **[docs/capabilities.md](docs/capabilities.md)**.
 
 ## Configuration (highlights)

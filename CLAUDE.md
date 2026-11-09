@@ -42,7 +42,8 @@ behind every decision.
 - `src/llm/` — `generate`/`stream`/`generateStructured`, `tool-loop`.
 - `src/tools/` — `define`, `prompted` (catalog + dispatch), `mode`, `types`.
 - `src/agent/` — `schemas`, `planner`/`executor`/`replanner`/`synthesizer`,
-  `runner` (createAgent), `loop-types`.
+  `runner` (createAgent), `loop-types`, `control` (RunControl: mid-run messages,
+  stopping one subagent), `persistence`.
 - `src/memory/` — `store`, `sessions` (IndexedDBStore), `compress` (compaction).
 - `src/tools/approval.ts` (consent gate), `search.ts` (find_tools / large
   catalogues), `wrap.ts` (per-run tool wrapping: gate, call budget, output cap).

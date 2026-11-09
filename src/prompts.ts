@@ -57,6 +57,8 @@ export interface ExecutorPromptContext {
   activeSkills?: string
   /** The executor can call find_tools to activate more tools. */
   searchMode?: boolean
+  /** What the user said while the run was going (`RunControl.send`), oldest first. */
+  updates?: string[]
 }
 export interface ReplannerPromptContext {
   goal: string
@@ -65,6 +67,10 @@ export interface ReplannerPromptContext {
   remaining: string[]
   mode: ToolCallMode
   activeSkills?: string
+  /** What the user said while the run was going, oldest first. */
+  updates?: string[]
+  /** How many of `updates` (the last ones) the plan has not been weighed against yet. */
+  newUpdates?: number
 }
 export interface SynthesizerPromptContext {
   goal: string
@@ -73,6 +79,8 @@ export interface SynthesizerPromptContext {
   /** Excerpts of what the tools returned, for answering with real data. */
   findings?: string[]
   activeSkills?: string
+  /** What the user said while the run was going, oldest first. */
+  updates?: string[]
 }
 
 export interface Prompts {
@@ -97,6 +105,34 @@ const historyBlock = (history?: { role: string; content: string }[]): string => 
 
 const section = (title: string, body?: string): string =>
   body && body.trim() ? `\n\n${title}:\n${body.trim()}` : ''
+
+const quoted = (text: string): string => text.trim().replace(/\n/g, '\n  ')
+
+/**
+ * What the user said while the run was going, for a stage prompt. `fresh` = how many of
+ * the last ones the stage is meeting for the first time.
+ */
+const updatesBlock = (updates?: string[], fresh = 0, advice = ''): string => {
+  if (!updates || updates.length === 0) return ''
+  const firstNew = fresh > 0 ? updates.length - fresh : updates.length
+  const lines = updates.map(
+    (u, i) =>
+      `${i + 1}. ${quoted(u)}${i >= firstNew ? '   [NEW — not yet reflected in the plan]' : ''}`,
+  )
+  const head = `MESSAGES FROM THE USER, sent while the agent was working (oldest first; they speak for the user and win over the original goal where they conflict):\n${lines.join('\n')}`
+  return advice ? `${head}\n${advice}` : head
+}
+
+/**
+ * The message a model gets in the MIDDLE of a step, after a round of tool calls: what the
+ * user just said. Not a stage prompt — the tool loop appends it as a user turn.
+ */
+export const renderUserMessages = (texts: string[]): string =>
+  `NEW MESSAGE FROM THE USER, sent while you were working:\n${texts
+    .map((t) => `- ${quoted(t)}`)
+    .join(
+      '\n',
+    )}\nIt speaks for the user and wins over the goal and the plan where they conflict. Take it into account from here on, then carry on with this step — or finish the step now if the message makes the rest of it pointless.`
 
 // --- planner ---------------------------------------------------------------
 
@@ -165,6 +201,12 @@ Reply with a single JSON object, nothing else:
 - "finish": the goal is already met — stop (omit "plan").
 ${REPLANNER_RULES}`
 
+// Only present in a prompt when the user sent a message mid-run, so a run without a
+// control sends exactly the system and user prompts it always did.
+const REPLANNER_UPDATES_ADVICE = `Weigh the [NEW] messages against the remaining plan: "revise" the remaining steps so they are honoured (and keep honouring the older ones), "finish" if the user says to stop or the goal is already met, "continue" only if the remaining steps already fit them.`
+
+const SYNTHESIZER_UPDATES_ADVICE = `Answer with these in mind: they changed what was asked. Say plainly if one of them could not be honoured in time.`
+
 const SYNTHESIZER_SYSTEM = `You are the SYNTHESIZER. Answer the user's goal from what the agent did and found.
 - Lead with the result: the concrete data, from the FINDINGS verbatim when accuracy matters (names, numbers, ids), then — briefly — what was changed.
 - Mention any assumption the agent made. If something could not be done, say so plainly and why.
@@ -192,6 +234,7 @@ export const defaultPrompts: Prompts = {
       `GOAL: ${ctx.goal}`,
       stateBlock(ctx.state).trimStart(),
       ctx.mode === 'prompted' ? `TOOLS:\n${ctx.toolCatalog}` : '',
+      updatesBlock(ctx.updates),
       ctx.done.length ? `Already done:\n${numbered(ctx.done, '')}` : '',
       `STEP ${ctx.index}/${ctx.total}: ${ctx.step}`,
     ]
@@ -205,6 +248,7 @@ export const defaultPrompts: Prompts = {
     prompt: [
       `GOAL: ${ctx.goal}`,
       stateBlock(ctx.state).trimStart(),
+      updatesBlock(ctx.updates, ctx.newUpdates, REPLANNER_UPDATES_ADVICE),
       `Already done:\n${numbered(ctx.done, '(nothing yet)')}`,
       `Remaining plan:\n${numbered(ctx.remaining, '(none)')}`,
       'Decide: continue, revise, or finish.',
@@ -217,6 +261,7 @@ export const defaultPrompts: Prompts = {
     prompt: [
       `GOAL: ${ctx.goal}`,
       stateBlock(ctx.state).trimStart(),
+      updatesBlock(ctx.updates, 0, SYNTHESIZER_UPDATES_ADVICE),
       `What was done:\n${numbered(ctx.done, '(no changes)')}`,
       ctx.findings?.length ? `FINDINGS (tool results):\n${ctx.findings.join('\n')}` : '',
       'Write the final answer for the user.',

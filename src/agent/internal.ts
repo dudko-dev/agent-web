@@ -77,6 +77,13 @@ export interface AgentContext {
   setCurrentStep?: (step: IPlanStep | undefined) => void
   /** Images / PDFs / files the user sent with this run's goal. */
   images?: RunFile[]
+  /** Everything the user said while the run was going (`RunControl.send`), oldest first. */
+  userUpdates?: () => string[]
+  /**
+   * Take what the user said since the last boundary, for delivery INSIDE a step (between
+   * tool-calling rounds): records it, announces it, and returns the texts.
+   */
+  takeRoundUpdates?: () => string[]
 }
 
 /**
