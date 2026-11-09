@@ -544,6 +544,64 @@ What a resume does **not** give you:
 - Nothing resumes by itself: your app decides when to look for an unfinished run and
   whether to offer it.
 
+## Steering a run that is already going
+
+`run()` takes one goal and returns when the run is over. To say something in the
+meantime — "use the staging database", "skip the report" — or to stop one subagent out
+of several, make a **`RunControl`** and pass it to the run:
+
+```ts
+import { createAgent, createRunControl } from '@dudko.dev/agent-web'
+
+const control = createRunControl()
+const running = agent.run('Triage the new tickets', { control, onEvent })
+
+control.send('Ignore anything older than a week') // any time while it runs
+control.subagents() // [{ id, name, task, profile?, startedAt }] — who is running now
+control.stopSubagent(id) // stops that one; the run goes on
+const result = await running
+result.undelivered // messages the run never got to show the model — send them as the next run
+```
+
+A message is **not an interrupt**. The run never cuts a tool call short (it may be a
+write); the message waits for the next boundary and is then shown to the model:
+
+| It arrives… | It is shown… | `message.delivered` `at` |
+| --- | --- | --- |
+| during a step, while tools are being called | to the executor on its **next round** of that step, as a user turn after the tool results | `round` |
+| between steps | to the **replanner**, and to every later step | `step` |
+| after the last step, before the answer is written | to the synthesizer | `final` |
+| while the answer is being written, or after the run ended | to **nobody** — it comes back in `result.undelivered` | — |
+
+- **A message always makes the replanner look at the plan again**, at the end of the step
+  it was delivered in: a plan made before the user spoke may no longer be the right one.
+  That call (`replan.decision` with `byUser: true`) ignores `replan: false` and
+  `maxRevisions`, and a revise it makes is not counted against `maxRevisions`; it costs
+  one extra model call per boundary, not per message, and there is no cap on messages.
+  It does need a step left to plan: at `maxIterations` the message still reaches the
+  synthesizer. A replanner that says `finish` ends the run early — that is how "stop,
+  that is enough" works.
+- Every later stage of the run sees what the user said (a `MESSAGES FROM THE USER`
+  block), so a correction is not forgotten two steps later. It is also appended to the
+  session transcript, in order, and saved in a run checkpoint — a resumed run still
+  knows it.
+- A message arriving **before** the run starts is queued and announced (`message.queued`)
+  right after `run.start`. `send()` returns `false` for an empty text and once the run is
+  over; it never throws.
+- Prompted mode (small local models) gets the message in the same turn as the tool
+  results, before the "continue this step" contract; native mode adds it as a user turn
+  after the tool results, which is the order Anthropic, OpenAI and Gemini all accept.
+- Use one control per run. A hand-made object in its place is refused: only the ones
+  `createRunControl()` makes are read.
+
+**Stopping a subagent.** `stopSubagent(id)` aborts that child (and its worker, if it has
+one). Its delegation fails with a message the parent model can route around ("stopped by
+the user … carry on without its result"), `subagent.error` carries `stopped: true`, and
+sibling subagents and the run are untouched. Only a child that has started is listed; one
+still waiting for a `maxConcurrent` slot is not. A child's own subagents are not
+individually stoppable — stopping the child stops them with it. The log of what each
+child does is the `subagent.event` stream, the same events the parent emits.
+
 ## Autonomy
 
 The default prompts make the agent act on its own:
@@ -576,5 +634,7 @@ New events (in addition to plan/step/replan/final/usage/retry/stopped/error):
 | `tool.approval-requested` | `id, name, input, readOnly, step?` |
 | `tool.approval-resolved` | `id, name, approved, reason?, automatic` |
 | `subagent.start` / `subagent.event` / `subagent.complete` / `subagent.error` | `id, name` + `task` / `event` / `text, usage` / `error` |
+| `message.queued` | `id, text` — a `RunControl.send()` is waiting for a boundary |
+| `message.delivered` | `id, text, at: 'round' \| 'step' \| 'final'` — the model has seen it |
 
 `usage` events can now carry phase `'compact'` and `'subagent'`.

@@ -37,6 +37,7 @@ import {
 } from '../tools/search.js'
 import type { AgentToolSet } from '../tools/types.js'
 import { createCallCounter, schemaHintOf, wrapToolsForRun } from '../tools/wrap.js'
+import { portOf, type RunControl, type RunControlPort } from './control.js'
 import { executeStep, replanWanted } from './executor.js'
 import type { AgentContext, EffectiveToolStrategy } from './internal.js'
 import {
@@ -75,6 +76,12 @@ export interface RunOptions {
    */
   resumeFromRunId?: string
   /**
+   * Steer the run while it goes: `control.send(text)` puts a message in front of the model
+   * at the next boundary, `control.stopSubagent(id)` stops one subagent. Make it with
+   * `createRunControl()`; one control per run.
+   */
+  control?: RunControl
+  /**
    * Images sent with the goal (pasted screenshots, photos). They reach the
    * planner, the executor and the synthesizer of a vision-capable model; a
    * model known not to take images ends the run at once with
@@ -105,6 +112,12 @@ export interface RunResult {
   skills: string[]
   /** The limit that stopped the run early, if any. */
   budgetExceeded?: LimitBreach
+  /**
+   * Set when the run was given a `control`: the messages sent with it that the run never got
+   * to show the model (they arrived while the answer was being written, or after the run was
+   * stopped or ended). Send them as the next run. Empty when everything was delivered.
+   */
+  undelivered?: string[]
 }
 
 export interface CompactOptions {
@@ -311,7 +324,12 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${[...skillNames].join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
   )
 
-  const runCore = async (goal: string, opts: RunOptions, track: RunTrack): Promise<RunResult> => {
+  const runCore = async (
+    goal: string,
+    opts: RunOptions,
+    track: RunTrack,
+    port: RunControlPort | undefined,
+  ): Promise<RunResult> => {
     // Validated BEFORE anything is emitted or spent: a bad id throws to the caller.
     const resumed = await resolveResume(config.persistence, opts.resumeFromRunId)
     const emit = (event: AgentEvent): void => {
@@ -371,6 +389,10 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       emit({ type: 'skill.activated', name, by })
     }
     const discovered: string[] = [...(resumed?.discovered ?? [])]
+    // What the user said mid-run (`control.send`), and whether the replanner has weighed it.
+    const userUpdates: { text: string; reconciled: boolean }[] = (resumed?.userUpdates ?? []).map(
+      (u) => ({ ...u }),
+    )
     let currentStep: IPlanStep | undefined
     const counter = createCallCounter(cfg.maxToolCalls, resumed?.toolCalls)
     const builtins: ToolSet = {}
@@ -405,8 +427,22 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         addUsage: (u) => bumpUsage(u, 'subagent'),
         countCall: counter.count,
         maxToolOutputChars: cfg.compaction.maxToolOutputChars,
+        control: port,
       },
     )
+    // Take what the user sent since the last boundary and hand it to the model: recorded (a
+    // resume keeps it, and so does the session transcript), announced, returned as texts.
+    const deliver = (at: 'round' | 'step' | 'final'): string[] => {
+      if (!port) return []
+      const taken = port.drain()
+      for (const m of taken) {
+        userUpdates.push({ text: m.text, reconciled: false })
+        emit({ type: 'message.delivered', id: m.id, text: m.text, at })
+        log.info(`message from the user (delivered at ${at}):`, m.text)
+        void remember({ role: 'user', content: m.text })
+      }
+      return taken.map((m) => m.text)
+    }
 
     let budgetExceeded: LimitBreach | undefined
     const breach = (extra?: IUsage): LimitBreach | undefined => {
@@ -430,6 +466,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
           }
         : {}),
     })
+    // From here a `send` is announced as it comes (and anything sent earlier, now).
+    port?.attach(emit)
     const images = [...(opts.images ?? []), ...(opts.files ?? [])]
     const refused = images.map(attachmentKind).find((kind) => accepts[kind] === false)
     if (refused) {
@@ -510,6 +548,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         currentStep = step
       },
       images: images.length ? images : undefined,
+      userUpdates: () => userUpdates.map((u) => u.text),
+      ...(port ? { takeRoundUpdates: () => deliver('round') } : {}),
     }
     // Memory is text: an image is remembered by its name, not its pixels.
     if (!resumed)
@@ -607,6 +647,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         skills: [...activeSkillNames],
         discovered: [...discovered],
         attachments: images.length,
+        ...(userUpdates.length ? { userUpdates: userUpdates.map((u) => ({ ...u })) } : {}),
         ...extra,
       })
       const persist = async (
@@ -731,29 +772,47 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         // triggering step was the last one — 'revise' can add remedial steps.
         // A host predicate is watchdog- and abort-bounded; re-check abort after
         // it (it may await slow state) before spending a replanner call.
+        //
+        // A message from the user forces it, whatever the trigger: a plan made before the
+        // user spoke may no longer be the right one. That call is not a revision of the
+        // failure kind — it ignores `replan: false` and `maxRevisions`, and is not counted
+        // against them; it still needs a step left to plan (`maxIterations`).
+        deliver('step')
+        const fresh = userUpdates.filter((u) => !u.reconciled).length
+        const byUser = fresh > 0 && iter < cfg.maxIterations && !isAborted() && !breach()
         const wantReplan =
-          cfg.replan &&
-          iter < cfg.maxIterations &&
-          revisions < cfg.maxRevisions &&
-          !isAborted() &&
-          !breach() &&
-          (await replanWanted(cfg.replanAfter, stepResult, {
-            signal: ctx.signal,
-            timeoutMs: cfg.chatTimeoutMs,
-            onError: (err) => log.warn('replanAfter predicate threw — using the failure rule', err),
-          }))
+          byUser ||
+          (cfg.replan &&
+            iter < cfg.maxIterations &&
+            revisions < cfg.maxRevisions &&
+            !isAborted() &&
+            !breach() &&
+            (await replanWanted(cfg.replanAfter, stepResult, {
+              signal: ctx.signal,
+              timeoutMs: cfg.chatTimeoutMs,
+              onError: (err) =>
+                log.warn('replanAfter predicate threw — using the failure rule', err),
+            })))
         if (wantReplan && !isAborted()) {
           const decision = await decideReplan(
             ctx,
             text,
             done,
             remaining.map((s) => s.description),
+            fresh,
           )
           bumpUsage(decision.usage, 'replan')
-          emit({ type: 'replan.decision', mode: decision.decision, reason: decision.reason })
+          emit({
+            type: 'replan.decision',
+            mode: decision.decision,
+            reason: decision.reason,
+            ...(byUser ? { byUser: true } : {}),
+          })
+          // Weighed, whatever it decided: from here the messages are part of the run's story.
+          for (const u of userUpdates) u.reconciled = true
           if (decision.decision === 'finish') break
           if (decision.decision === 'revise' && decision.plan.length > 0) {
-            revisions += 1
+            if (!byUser) revisions += 1
             remaining = decision.plan
               .slice(0, Math.min(cfg.maxPlanSteps, cfg.maxIterations - iter))
               .map((description, i) => ({ id: `r${iter}-${i + 1}`, description }))
@@ -790,6 +849,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         ? stepWords.join('\n\n')
         : 'Done — the changes have been applied.'
       if (cfg.synthesize) {
+        // Last chance to be heard before the answer is written.
+        deliver('final')
         try {
           const synth = await synthesizeAnswer(ctx, text, done, findings)
           bumpUsage(synth.usage, 'synthesize')
@@ -847,17 +908,22 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   }
 
   const run = async (goal: string, opts: RunOptions = {}): Promise<RunResult> => {
+    // Before anything is spent: a hand-made object in place of createRunControl() is refused.
+    const port = portOf(opts.control)
     const track: RunTrack = {}
     let result: RunResult
     try {
-      result = await runCore(goal, opts, track)
+      result = await runCore(goal, opts, track, port)
     } catch (err) {
       // Unreachable by design (runCore reports its own failures), but a run with a checkpoint
       // must still be closed out, not left looking as if it is executing.
+      port?.detach()
       track.error = err instanceof Error ? err.message : String(err)
       await track.complete?.(undefined)
       throw err
     }
+    // The run is over: what it never showed the model goes back to the host.
+    if (port) result.undelivered = port.detach()
     await track.complete?.(result)
     return result
   }

@@ -28,6 +28,7 @@ export const synthesizeAnswer = async (
     done,
     findings,
     activeSkills: active.length ? renderActiveSkills(active) : undefined,
+    updates: ctx.userUpdates?.(),
   })
   const result = stream(ctx.synthesizerModel, {
     ...stageCall(ctx, 'synthesizer', parts.system),
