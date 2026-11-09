@@ -51,6 +51,23 @@ export type SubagentWorkerConfig = Pick<
   toolApproval?: { mode?: 'autopilot' | 'read-only'; rules?: Record<string, 'allow' | 'deny'> }
 }
 
+/**
+ * A named way to run the same subagent. Its fields are laid OVER the base
+ * `config` / `workerConfig`, field by field and shallow: a profile's `limits`
+ * replaces the base's `limits`, it is not merged into it. The PARENT model picks
+ * one per call with the optional `profile` argument; the host decides what each
+ * name means — a cheap model for a quick lookup, a strong one with thinking for
+ * a hard question, a different system prompt, a narrower tool set.
+ */
+export interface SubagentProfile {
+  /** When to pick this profile — shown to the parent model, which chooses by it. */
+  description: string
+  /** In-process subagent: fields laid over `config` (model, thinking, limits, systemPrompt, tools …). */
+  config?: Partial<BrowserAgentConfig>
+  /** Worker subagent: fields laid over `workerConfig`. */
+  workerConfig?: Partial<SubagentWorkerConfig>
+}
+
 export interface SubagentToolOptions {
   /** Label for events and logs (the tool's KEY in your ToolSet is up to you). */
   name: string
@@ -85,6 +102,14 @@ export interface SubagentToolOptions {
   outputMaxChars?: number
   /** Mark the tool read-only for the parent's consent gate (default false). */
   readOnly?: boolean
+  /**
+   * Named variants the parent model chooses between per call. The tool gains an
+   * optional `profile` argument (one of these names); leaving it out runs the base
+   * config. The child's context is still just `task` — a profile that changes
+   * `systemPrompt`, `skills` or `tools` is how a child gets a different one.
+   * Without profiles the tool is exactly what it was.
+   */
+  profiles?: Record<string, SubagentProfile>
 }
 
 interface ChildOutcome {
@@ -150,6 +175,37 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
   if (opts.worker && !opts.workerConfig) {
     throw new Error(`subagent "${opts.name}": a worker subagent needs \`workerConfig\``)
   }
+  const profiles = opts.profiles ?? {}
+  const profileNames = Object.keys(profiles)
+  for (const [pname, p] of Object.entries(profiles)) {
+    if (!pname.trim()) throw new Error(`subagent "${opts.name}": a profile needs a non-empty name`)
+    if (!p || typeof p.description !== 'string' || !p.description.trim()) {
+      throw new Error(
+        `subagent "${opts.name}": profile "${pname}" needs a description — the parent model chooses by it`,
+      )
+    }
+    if (opts.worker && p.config) {
+      throw new Error(
+        `subagent "${opts.name}": profile "${pname}" sets \`config\`, which does not apply to a worker subagent — use \`workerConfig\``,
+      )
+    }
+    if (!opts.worker && p.workerConfig) {
+      throw new Error(
+        `subagent "${opts.name}": profile "${pname}" sets \`workerConfig\`, which does not apply to an in-process subagent — use \`config\``,
+      )
+    }
+  }
+  /** An empty value counts as "not given": models do send `profile: ""`. */
+  const pickProfile = (name: string | undefined): SubagentProfile | undefined => {
+    if (!name) return undefined
+    // hasOwn, not `in`: a model answering "constructor" must not resolve to Object's.
+    if (!Object.hasOwn(profiles, name)) {
+      throw new Error(
+        `subagent "${opts.name}": unknown profile "${name}" — choose one of: ${profileNames.join(', ')}`,
+      )
+    }
+    return profiles[name]
+  }
   const acquire = createSemaphore(Math.max(1, opts.maxConcurrent ?? 4))
   const outputMax = opts.outputMaxChars ?? 8_000
 
@@ -178,8 +234,9 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
     signal: AbortSignal | undefined,
     forward: (e: AgentEvent) => void,
     hostTools: ToolSet,
+    profile: SubagentProfile | undefined,
   ): Promise<ChildOutcome> => {
-    const config = opts.config as BrowserAgentConfig
+    const config = { ...(opts.config as BrowserAgentConfig), ...profile?.config }
     // One child per task: its host tools are gated by THIS parent run. A
     // direct model (incl. a loaded WebLLM engine) is passed through, not rebuilt.
     const agent: Agent = await createAgent({ ...config, tools: { ...config.tools, ...hostTools } })
@@ -206,8 +263,10 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
       })),
     )
 
-  const workerConfigFor = async (): Promise<Record<string, unknown>> => {
-    const cfg = opts.workerConfig as SubagentWorkerConfig
+  const workerConfigFor = async (
+    profile: SubagentProfile | undefined,
+  ): Promise<Record<string, unknown>> => {
+    const cfg = { ...opts.workerConfig, ...profile?.workerConfig } as SubagentWorkerConfig
     let model: ProviderModelSpec = { ...cfg.model }
     if (model.credentialRef && !model.apiKey && opts.credentials) {
       const apiKey = await opts.credentials.getApiKey(model.credentialRef)
@@ -223,9 +282,10 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
     signal: AbortSignal | undefined,
     forward: (e: AgentEvent) => void,
     hostTools: ToolSet,
+    profile: SubagentProfile | undefined,
   ): Promise<ChildOutcome> => {
     if (signal?.aborted) throw abortError()
-    const [config, proxied] = await Promise.all([workerConfigFor(), proxiedSpecs()])
+    const [config, proxied] = await Promise.all([workerConfigFor(profile), proxiedSpecs()])
     const worker = (opts.worker as () => WorkerLike)()
     return new Promise<ChildOutcome>((resolve, reject) => {
       let settled = false
@@ -284,9 +344,17 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
     })
   }
 
+  // The profiles are described in the tool's DESCRIPTION, not only on the schema property:
+  // a prompted-mode model reads the catalogue and a one-line shape hint, and would
+  // otherwise never learn what "deep" is for.
+  const description = profileNames.length
+    ? `${opts.description}\n\nOptional \`profile\` (omit it for the default):\n${profileNames
+        .map((n) => `- ${n}: ${profiles[n].description}`)
+        .join('\n')}`
+    : opts.description
   const t = tool({
-    description: opts.description,
-    inputSchema: jsonSchema<{ task: string }>({
+    description,
+    inputSchema: jsonSchema<{ task: string; profile?: string }>({
       type: 'object',
       properties: {
         task: {
@@ -294,11 +362,24 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
           description:
             'A complete, self-contained task: the subagent sees nothing of your context except this text.',
         },
+        ...(profileNames.length
+          ? {
+              profile: {
+                type: 'string',
+                enum: profileNames,
+                description:
+                  "One of this tool's profiles, described above. Omit it for the default.",
+              },
+            }
+          : {}),
       },
       required: ['task'],
       additionalProperties: false,
     }),
-    execute: async ({ task }, options) => {
+    execute: async ({ task, profile: profileName }, options) => {
+      // Before taking a slot or announcing a start: an unknown name is a tool error
+      // the model can correct, not a delegation that began and died.
+      const profile = pickProfile(profileName)
       const runCtx = toolRunContextOf(options)
       const parentSignal =
         (options as { abortSignal?: AbortSignal } | undefined)?.abortSignal ?? runCtx?.signal
@@ -319,17 +400,25 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
               controller.abort()
             }, opts.timeoutMs)
           : undefined
-      emit({ type: 'subagent.start', id, name: opts.name, task })
+      emit({
+        type: 'subagent.start',
+        id,
+        name: opts.name,
+        task,
+        ...(profile ? { profile: profileName } : {}),
+      })
       try {
         const forward = (event: AgentEvent) =>
           emit({ type: 'subagent.event', id, name: opts.name, event })
         const hostTools = gatedHostTools(runCtx?.approve)
         const run = opts.worker ? runInWorker : runInProcess
-        const out = await run(task, controller.signal, forward, hostTools).catch((err: unknown) => {
-          if (timedOut)
-            throw new Error(`subagent "${opts.name}" timed out after ${opts.timeoutMs} ms`)
-          throw err
-        })
+        const out = await run(task, controller.signal, forward, hostTools, profile).catch(
+          (err: unknown) => {
+            if (timedOut)
+              throw new Error(`subagent "${opts.name}" timed out after ${opts.timeoutMs} ms`)
+            throw err
+          },
+        )
         runCtx?.addUsage(out.usage)
         emit({ type: 'subagent.complete', id, name: opts.name, text: out.text, usage: out.usage })
         return clip(out.text, outputMax)
@@ -348,7 +437,9 @@ export const createSubagentTool = (opts: SubagentToolOptions): AgentTool => {
       }
     },
   }) as AgentTool
-  t.promptHint = '{ task: string }'
+  t.promptHint = profileNames.length
+    ? `{ task: string, profile?: ${profileNames.map((n) => JSON.stringify(n)).join(' | ')} }`
+    : '{ task: string }'
   if (opts.readOnly) t.readOnly = true
   return t
 }
