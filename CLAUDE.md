@@ -47,6 +47,9 @@ behind every decision.
 - `src/memory/` — `store`, `sessions` (IndexedDBStore), `compress` (compaction).
 - `src/tools/approval.ts` (consent gate), `search.ts` (find_tools / large
   catalogues), `wrap.ts` (per-run tool wrapping: gate, call budget, output cap).
+- `src/tools/egress.ts` — `config.egress` / `web_fetch`: the browser sibling of the server's
+  `createSafeFetch` (same policy shape; the pure address/pattern core is a COPY of the server's —
+  change both, with tests). Security boundary: a change needs a test and a mutation check.
 - `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
   `protocol` (postMessage shapes).
 - `src/{thinking,limits,caching,skills,images}.ts` — see docs/capabilities.md.

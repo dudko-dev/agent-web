@@ -357,7 +357,7 @@ thinking level, limits or system prompt. Give `persistence` a store
 last checkpoint with `run('', { resumeFromRunId })` — the planner does not run again and
 no finished step is repeated. `createRunControl()` steers a run that is going: `send()`
 puts a message in front of the model at the next boundary (the replanner re-checks the plan
-against it), `stopSubagent(id)` stops one subagent. Details, defaults and events:
+against it), `stopSubagent(id)` stops one subagent. `egress` (off by default) gives the model one safe `web_fetch` tool with allow / deny lists. Details, defaults and events:
 **[docs/capabilities.md](docs/capabilities.md)**.
 
 ## Configuration (highlights)
