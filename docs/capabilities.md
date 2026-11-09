@@ -68,7 +68,7 @@ createAgent({
     maxOutputTokens: 20_000,   // cumulative per run, thinking included
     maxReasoningTokens: 10_000,
     maxTotalTokens: 220_000,
-    perCall: { planner: 800, executor: 1200, replanner: 400, synthesizer: 600, compaction: 1024 },
+    perCall: { planner: 800, executor: 1200, replanner: 400, synthesizer: 3000, compaction: 1024 },
   },
   maxIterations: 8,     // executed steps per run (incl. after a revise)
   maxStepsPerTask: 4,   // tool-calling rounds inside one step
@@ -87,6 +87,12 @@ which cap ended the run. `checkLimits(usage, limits)` is exported.
 `usage` carries `inputTokens`, `outputTokens`, `totalTokens`, plus
 `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider
 reports them. The legacy `budgets` option still works; `limits.perCall` wins.
+
+`perCall` caps the output of ONE model call per phase. The defaults are the numbers in the
+example above: planner 800, executor 1200, replanner 400, **synthesizer 3000** (the answer the
+user reads), compaction 1024. A thinking model spends part of its cap on thoughts, so raise
+the cap together with `thinking`; the executor's cap also bounds what it can write into one
+tool call (a long file body, say).
 
 ## Context management and compaction
 

@@ -211,7 +211,8 @@ export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
     planner: c.limits?.perCall?.planner ?? c.budgets?.planner ?? 800,
     executor: c.limits?.perCall?.executor ?? c.budgets?.executor ?? 1200,
     replanner: c.limits?.perCall?.replanner ?? c.budgets?.replanner ?? 400,
-    synthesizer: c.limits?.perCall?.synthesizer ?? c.budgets?.synthesizer ?? 400,
+    // The final answer is the one call whose text the user reads: 400 cut a normal answer short.
+    synthesizer: c.limits?.perCall?.synthesizer ?? c.budgets?.synthesizer ?? 3000,
     compaction: c.limits?.perCall?.compaction ?? c.compaction?.summaryMaxTokens ?? 1024,
   },
   limits: c.limits ?? {},
