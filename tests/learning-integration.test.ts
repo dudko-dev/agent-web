@@ -153,6 +153,39 @@ test("learning: within ONE run, a lesson written in step 1 is already in step 2'
   assert.ok(at(calls, 'executor')[0].tools.includes('load_skill'))
 })
 
+test('learning: a lesson written in step 1 can be loaded - and activated - by load_skill in step 2 of the same run', async () => {
+  const route = (info: CallInfo): Reply => {
+    switch (stageOf(info)) {
+      case 'planner':
+        return { text: plan(['Write it down', 'Use it']) }
+      case 'executor':
+        if (info.user.includes('STEP 1/2')) {
+          return info.toolResults === 0
+            ? { toolCalls: [{ name: 'save_skill', args: LESSON }] }
+            : { text: 'Wrote it down.' }
+        }
+        return info.toolResults === 0
+          ? { toolCalls: [{ name: 'load_skill', args: { name: 'image-format-jpg' } }] }
+          : { text: 'Loaded my own lesson.' }
+      case 'replanner':
+        return { text: proceed }
+      default:
+        return { text: 'Done.' }
+    }
+  }
+  const { agent } = await open(route, { learning: true })
+  const events: AgentEvent[] = []
+  const result = await agent.run('two steps', { onEvent: (e) => events.push(e) })
+  const load = result.trace[1].toolCalls[0]
+  assert.equal(load.ok, true, String(load.output))
+  assert.match(String((load.output as { content: string }).content), /A lesson YOU wrote earlier/)
+  assert.deepEqual(
+    ofType(events, 'skill.activated').map((e) => [e.name, e.by]),
+    [['image-format-jpg', 'tool']],
+  )
+  assert.deepEqual(result.skills, ['image-format-jpg'])
+})
+
 test('learning off (the default): no notebook tools, and not a word about learning in the prompts', async () => {
   const { convert } = quirky()
   const { agent, calls } = await open(story, { tools: { convert } })
