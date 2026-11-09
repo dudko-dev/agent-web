@@ -14,7 +14,16 @@ export type UsagePhase = Phase | 'compact' | 'subagent'
  * weight-download progress.
  */
 export type AgentEvent =
-  | { type: 'run.start'; goal: string }
+  /**
+   * `runId` names the run for `persistence` / `resumeFromRunId`. `resumed` is set when it
+   * continues a checkpointed run: the steps already done and the ones still to come.
+   */
+  | {
+      type: 'run.start'
+      goal: string
+      runId?: string
+      resumed?: { completedSteps: number; remainingSteps: number }
+    }
   | { type: 'model.load'; progress: number; text: string }
   | { type: 'plan.thought-delta'; delta: string }
   | { type: 'plan.step-added'; step: IPlanStep; index: number }

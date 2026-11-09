@@ -352,7 +352,10 @@ needs. Subagents are tools too — `createSubagentTool({ config })` runs a child
 agent in-process, `createSubagentTool({ worker, workerConfig })` isolates it in a
 Web Worker served by `serveSubagentWorker()`. Add `profiles` and the parent model
 chooses, per call, between named variants of the same subagent — another model,
-thinking level, limits or system prompt. Details, defaults and events:
+thinking level, limits or system prompt. Give `persistence` a store
+(`new IndexedDBRunStore()`) and a run interrupted by a reload or a crash resumes from its
+last checkpoint with `run('', { resumeFromRunId })` — the planner does not run again and
+no finished step is repeated. Details, defaults and events:
 **[docs/capabilities.md](docs/capabilities.md)**.
 
 ## Configuration (highlights)

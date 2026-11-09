@@ -158,8 +158,9 @@ export const wrapToolsForRun = (tools: ToolSet, o: WrapToolsOptions): ToolSet =>
 }
 
 /** Throws ToolBudgetError once `cap` calls were made (cap ≤ 0 = unlimited). */
-export const createCallCounter = (cap: number | undefined) => {
-  let calls = 0
+export const createCallCounter = (cap: number | undefined, initial = 0) => {
+  // `initial` is a resumed run's count: the cap is per RUN, not per process.
+  let calls = Math.max(0, Math.floor(initial))
   return {
     count: (): void => {
       if (cap && cap > 0 && calls >= cap) throw new ToolBudgetError(cap)
