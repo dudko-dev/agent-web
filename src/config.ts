@@ -13,6 +13,7 @@ import type { ModelInput, StageInput } from './providers/types.js'
 import type { Prompts } from './prompts.js'
 import type { CredentialStore } from './secrets/store.js'
 import type { Skill } from './skills.js'
+import type { IEgressPolicy } from './tools/egress.js'
 import type { ThinkingSetting, ThinkingStage } from './thinking.js'
 import type { ToolApprovalConfig } from './tools/approval.js'
 import type { AgentToolSet } from './tools/types.js'
@@ -61,6 +62,14 @@ export interface BrowserAgentConfig {
   /** Propagated to the openai-compatible provider name and the MCP client. */
   clientName?: string
 
+  /**
+   * Requests the MODEL may make (the `web_fetch` tool). Off unless set: with it off there is no
+   * way to fetch. `true` = any public host over https; an object narrows or widens that (allow /
+   * deny lists, ...) - see `IEgressPolicy`. A browser cannot pin DNS: prefer an `allow` list, or a
+   * `fetch` that goes through a server-side safe fetch. Not the provider's own calls, MCP servers
+   * or tools you pass yourself - those are your configuration, not the model's.
+   */
+  egress?: boolean | IEgressPolicy
   /** Host tools the executor may call (an AI SDK ToolSet; use defineTool). */
   tools?: AgentToolSet
   /** Whitelist: only these tool names from `tools` are mounted (default: all). */

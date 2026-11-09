@@ -159,6 +159,26 @@ export { normalizeUsage } from './llm/util.js'
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 export { defineTool } from './tools/define.js'
+// Egress: what the model may fetch (the browser sibling of the server's createSafeFetch).
+export {
+  createGuardedFetch,
+  createWebFetchTool,
+  createEgressTools,
+  EgressError,
+  classifyAddress,
+  checkEgressUrl,
+  hostMatches,
+  htmlToText,
+  resolveEgressPolicy,
+  WEB_FETCH_TOOL,
+} from './tools/egress.js'
+export type {
+  EgressErrorCode,
+  GuardedFetch,
+  IEgressPolicy,
+  IResolvedEgressPolicy,
+  IWebFetchOptions,
+} from './tools/egress.js'
 export { renderCatalog, dispatch } from './tools/prompted.js'
 export { selectToolMode } from './tools/mode.js'
 export { promptHintOf } from './tools/types.js'

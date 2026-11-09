@@ -26,6 +26,7 @@ import {
   type ToolApprovalMode,
   TOOL_APPROVAL_MODES,
 } from '../tools/approval.js'
+import { createEgressTools } from '../tools/egress.js'
 import { selectToolMode } from '../tools/mode.js'
 import { renderCatalog } from '../tools/prompted.js'
 import {
@@ -253,7 +254,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   // fixed order (so the cached prefix is stable), and a server's own order is
   // what small models were measured against (see the Node sibling's live gate).
   const baseTools: AgentToolSet = filterTools(
-    config.tools ?? {},
+    // What `egress` switches on (web_fetch); a tool of the same name in `tools` wins.
+    { ...createEgressTools(config.egress), ...config.tools },
     config.availableTools,
     config.excludedTools,
   )
