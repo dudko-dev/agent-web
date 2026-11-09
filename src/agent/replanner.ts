@@ -1,10 +1,10 @@
 import { generate, generateStructured } from '../llm/generate.js'
-import { normalizeUsage } from '../llm/util.js'
+import { normalizeUsage, usageOfError } from '../llm/util.js'
 import { parseReplannerResponse, type ReplanDecision } from '../parse.js'
 import type { ToolCallMode } from '../prompts.js'
 import { renderActiveSkills } from '../skills.js'
 import type { IUsage } from './loop-types.js'
-import { emptyUsage } from './loop-types.js'
+import { addUsage } from './loop-types.js'
 import { stageCall, type AgentContext } from './internal.js'
 import { ReplanSchema } from './schemas.js'
 
@@ -53,6 +53,8 @@ export const decideReplan = async (
     }
   }
 
+  // Tokens a failed structured attempt cost, added to the fallback call's.
+  let wasted = normalizeUsage()
   if (ctx.plannerMode === 'native') {
     try {
       const result = await generateStructured(ctx.plannerModel, ReplanSchema, commonFor('native'))
@@ -62,8 +64,9 @@ export const decideReplan = async (
         plan: result.object.plan ?? [],
         usage: normalizeUsage(result.usage),
       }
-    } catch {
+    } catch (err) {
       /* fall through to the prompted salvage below */
+      wasted = usageOfError(err)
     }
   }
 
@@ -76,9 +79,9 @@ export const decideReplan = async (
       decision: parsed.decision,
       reason: parsed.reason,
       plan: parsed.plan,
-      usage: normalizeUsage(result.usage),
+      usage: addUsage(wasted, normalizeUsage(result.usage)),
     }
   } catch {
-    return { decision: 'continue', reason: 'replanner unavailable', plan: [], usage: emptyUsage() }
+    return { decision: 'continue', reason: 'replanner unavailable', plan: [], usage: wasted }
   }
 }

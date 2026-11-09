@@ -15,8 +15,17 @@ export interface CompactionConfig {
   auto?: boolean
   /** The model's context window, in tokens (default 128 000). */
   contextWindowTokens?: number
-  /** Compact once the estimated context exceeds this (default: half the window). */
+  /**
+   * Compact once the estimated context - the fixed prompt (system, tools, skills), the transcript
+   * and the run's step log together - exceeds this many tokens. Default: `thresholdRatio` of the
+   * window.
+   */
   thresholdTokens?: number
+  /**
+   * The same threshold as a share of the window, 0 < ratio <= 1 (default 0.85). `thresholdTokens`
+   * wins when both are set; it follows the window if the model turns out to have a smaller one.
+   */
+  thresholdRatio?: number
   /** Transcript messages kept verbatim (default 4). */
   keepRecentTurns?: number
   /** Executed steps kept verbatim in the run's trace (default 3). */
@@ -39,6 +48,7 @@ export interface ResolvedCompaction {
   auto: boolean
   contextWindowTokens: number
   thresholdTokens: number
+  thresholdRatio: number
   keepRecentTurns: number
   keepRecentSteps: number
   summaryMaxTokens: number
@@ -47,12 +57,24 @@ export interface ResolvedCompaction {
   keepToolResults: number
 }
 
+/**
+ * Compaction starts at this share of the window unless configured. The estimate leans high (see
+ * `estimateTokens`), so on a Claude model this is roughly 70-75% really used - the rest is room
+ * for the answer and for what one step adds before the next check.
+ */
+export const DEFAULT_COMPACTION_THRESHOLD_RATIO = 0.85
+
+const ratioOf = (r: number | undefined): number =>
+  typeof r === 'number' && r > 0 && r <= 1 ? r : DEFAULT_COMPACTION_THRESHOLD_RATIO
+
 export const resolveCompaction = (c: CompactionConfig | undefined): ResolvedCompaction => {
   const contextWindowTokens = c?.contextWindowTokens ?? 128_000
+  const thresholdRatio = ratioOf(c?.thresholdRatio)
   return {
     auto: c?.auto ?? true,
     contextWindowTokens,
-    thresholdTokens: c?.thresholdTokens ?? Math.floor(contextWindowTokens / 2),
+    thresholdTokens: c?.thresholdTokens ?? Math.floor(contextWindowTokens * thresholdRatio),
+    thresholdRatio,
     keepRecentTurns: c?.keepRecentTurns ?? 4,
     keepRecentSteps: c?.keepRecentSteps ?? 3,
     summaryMaxTokens: c?.summaryMaxTokens ?? 1024,
@@ -63,11 +85,79 @@ export const resolveCompaction = (c: CompactionConfig | undefined): ResolvedComp
   }
 }
 
-/** Cheap, provider-independent token estimate (~4 chars per token). */
-export const estimateTokens = (text: string): number => Math.ceil((text ?? '').length / 4)
+// Chinese / Japanese / Korean characters and the halves of a surrogate pair (emoji): about a
+// token each. Other non-ASCII text (Cyrillic, Greek, accented Latin...) about two characters.
+const isWide = (c: number): boolean =>
+  (c >= 0x3040 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xd800 && c <= 0xdfff)
+
+/**
+ * Cheap, provider-independent token estimate, by kind of character - because text is not one
+ * thing: letters run ~2.5 to a token (prose is kinder; code, markdown and JSON are not), digits
+ * and punctuation about one each (JSON, tables, ids), a space a quarter, a newline one, other
+ * scripts (Russian...) two characters, CJK and emoji one. Calibrated against Claude's tokenizer,
+ * the most token-hungry in use, over prose, markdown, code, JSON, a table, Russian and a mix: it
+ * comes out 1.1-1.4x the real count and never below it (a flat "4 characters a token" was
+ * 0.4-0.7x for everything but Russian). It errs high ON PURPOSE: it decides when to compact, and
+ * compacting a little early is cheap while overflowing the window is a failed run. A tokenizer
+ * that packs tighter (OpenAI, Gemini) makes it higher still - then raise `thresholdRatio`.
+ */
+export const estimateTokens = (text: string): number => {
+  const s = text ?? ''
+  let letters = 0
+  let digits = 0
+  let spaces = 0
+  let newlines = 0
+  let punct = 0
+  let other = 0
+  let wide = 0
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i)
+    if (c < 128) {
+      if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) letters += 1
+      else if (c >= 48 && c <= 57) digits += 1
+      else if (c === 32 || c === 9) spaces += 1
+      else if (c === 10) newlines += 1
+      else punct += 1
+    } else if (isWide(c)) wide += 1
+    else other += 1
+  }
+  // In thousandths of a token, so the arithmetic is exact: 1.1 x (letters / 2.5 + digits +
+  // punctuation x 1.1 + spaces / 4 + newlines + other / 2 + wide).
+  return Math.ceil(
+    (440 * letters +
+      1100 * digits +
+      1210 * punct +
+      275 * spaces +
+      1100 * newlines +
+      550 * other +
+      1100 * wide) /
+      1000,
+  )
+}
 
 const messageTokens = (msgs: StoredMessage[]): number =>
   msgs.reduce((n, m) => n + estimateTokens(`${m.role}: ${m.content}\n`), 0)
+
+/**
+ * The lines joined, keeping the NEWEST ones that fit `maxTokens` (estimated); with no budget the
+ * historical cut: the last 48 000 characters.
+ */
+const newestWithin = (lines: string[], maxTokens: number | undefined): string => {
+  if (maxTokens === undefined) return lines.join('\n').slice(-48_000)
+  const kept: string[] = []
+  let used = 0
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const t = estimateTokens(lines[i]) + 1
+    if (used + t > maxTokens) {
+      // A single line larger than the budget: its tail, rather than nothing.
+      if (kept.length === 0) kept.push(lines[i].slice(-Math.max(1, maxTokens) * 2))
+      break
+    }
+    kept.unshift(lines[i])
+    used += t
+  }
+  return kept.join('\n')
+}
 
 export interface CompressOptions {
   /** Compress once the transcript exceeds this many characters (0 = never). */
@@ -78,6 +168,12 @@ export interface CompressOptions {
   keepRecent?: number
   /** Output cap of the summary call. */
   summaryMaxTokens?: number
+  /**
+   * The most the summariser is shown, in estimated tokens (the newest part is kept). Default: a
+   * fixed 48 000 characters. The agent passes a share of the window, so a long transcript is
+   * summarised whole instead of cut to its last few pages first.
+   */
+  maxInputTokens?: number
   /** Compact even when below the threshold (manual "compact now"). */
   force?: boolean
   /** Time-box the summarisation call so it can never hang the caller. */
@@ -120,10 +216,10 @@ export const compressHistory = async (
   const tail = messages.slice(messages.length - keepRecent)
   // The newest part of the head matters most; keep the tail end of it when it
   // has to be cut to fit the summariser's own window.
-  const transcript = head
-    .map((m) => `${m.role}: ${m.content}`)
-    .join('\n')
-    .slice(-48_000)
+  const transcript = newestWithin(
+    head.map((m) => `${m.role}: ${m.content}`),
+    opts.maxInputTokens,
+  )
   try {
     const result = await generate(model, {
       system: SUMMARY_SYSTEM,
@@ -170,7 +266,10 @@ export const compactSteps = async (
   try {
     const result = await generate(model, {
       system: TRACE_SYSTEM,
-      prompt: head.map((d, i) => `${i + 1}. ${d}`).join('\n'),
+      prompt: newestWithin(
+        head.map((d, i) => `${i + 1}. ${d}`),
+        opts.maxInputTokens ?? 1e9,
+      ),
       maxOutputTokens: opts.summaryMaxTokens ?? 600,
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,

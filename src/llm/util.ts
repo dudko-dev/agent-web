@@ -28,6 +28,16 @@ export interface SdkUsageLike {
 }
 
 /** Normalise the AI SDK usage shape (fields can be undefined) into IUsage. */
+/**
+ * What a call that FAILED still cost. The AI SDK puts the usage on the error it throws when a
+ * structured answer cannot be parsed (`NoObjectGeneratedError.usage`); the tokens were spent
+ * all the same, and a fallback call must not hide them.
+ */
+export const usageOfError = (err: unknown): IUsage => {
+  const u = (err as { usage?: SdkUsageLike } | null | undefined)?.usage
+  return normalizeUsage(u && typeof u === 'object' ? u : undefined)
+}
+
 export const normalizeUsage = (u?: SdkUsageLike): IUsage => {
   const inputTokens = u?.inputTokens ?? 0
   const outputTokens = u?.outputTokens ?? 0

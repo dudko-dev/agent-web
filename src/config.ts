@@ -195,6 +195,52 @@ export interface ResolvedConfig {
   logLevel: LogLevel
 }
 
+// The default output cap of one call per phase is a share of the context window, so a small local
+// model gets small caps (its window cannot hold a 3000-token answer next to the prompt) and a
+// large one gets room. These shares give the long-standing numbers at the default 128k window:
+// planner 800, executor 1200, replanner 400, synthesizer 3000, compaction 1024.
+const BUDGET_SHARES = {
+  planner: { num: 1, den: 160, min: 256, max: 2000 },
+  executor: { num: 3, den: 320, min: 384, max: 8192 },
+  replanner: { num: 1, den: 320, min: 192, max: 1500 },
+  synthesizer: { num: 3, den: 128, min: 512, max: 8192 },
+  compaction: { num: 1, den: 125, min: 256, max: 4096 },
+} as const
+
+const share = (window: number, s: { num: number; den: number; min: number; max: number }) =>
+  Math.min(s.max, Math.max(s.min, Math.round((window * s.num) / s.den)))
+
+/**
+ * The effective per-call output caps: what the host set (`limits.perCall`, then the legacy
+ * `budgets`) wins; every other phase gets its share of the window.
+ */
+export const resolveBudgets = (
+  c: BrowserAgentConfig,
+  contextWindowTokens: number,
+): ResolvedConfig['budgets'] => ({
+  planner:
+    c.limits?.perCall?.planner ??
+    c.budgets?.planner ??
+    share(contextWindowTokens, BUDGET_SHARES.planner),
+  executor:
+    c.limits?.perCall?.executor ??
+    c.budgets?.executor ??
+    share(contextWindowTokens, BUDGET_SHARES.executor),
+  replanner:
+    c.limits?.perCall?.replanner ??
+    c.budgets?.replanner ??
+    share(contextWindowTokens, BUDGET_SHARES.replanner),
+  // The final answer is the one call whose text the user reads: 400 cut a normal answer short.
+  synthesizer:
+    c.limits?.perCall?.synthesizer ??
+    c.budgets?.synthesizer ??
+    share(contextWindowTokens, BUDGET_SHARES.synthesizer),
+  compaction:
+    c.limits?.perCall?.compaction ??
+    c.compaction?.summaryMaxTokens ??
+    share(contextWindowTokens, BUDGET_SHARES.compaction),
+})
+
 export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
   clientName: c.clientName ?? 'agent-web',
   sessionId: c.sessionId ?? 'default',
@@ -207,14 +253,7 @@ export const resolveConfig = (c: BrowserAgentConfig): ResolvedConfig => ({
   maxToolCalls: c.maxToolCalls ?? 0,
   maxPlanSteps: c.maxPlanSteps ?? 8,
   chatTimeoutMs: c.chatTimeoutMs ?? 120_000,
-  budgets: {
-    planner: c.limits?.perCall?.planner ?? c.budgets?.planner ?? 800,
-    executor: c.limits?.perCall?.executor ?? c.budgets?.executor ?? 1200,
-    replanner: c.limits?.perCall?.replanner ?? c.budgets?.replanner ?? 400,
-    // The final answer is the one call whose text the user reads: 400 cut a normal answer short.
-    synthesizer: c.limits?.perCall?.synthesizer ?? c.budgets?.synthesizer ?? 3000,
-    compaction: c.limits?.perCall?.compaction ?? c.compaction?.summaryMaxTokens ?? 1024,
-  },
+  budgets: resolveBudgets(c, resolveCompaction(c.compaction).contextWindowTokens),
   limits: c.limits ?? {},
   temperature: c.temperature,
   replan: c.replan ?? true,

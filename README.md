@@ -376,7 +376,7 @@ against it), `stopSubagent(id)` stops one subagent. `egress` (off by default) gi
 | `thinking` / `stageThinking` | provider default | `true`, a level (`'low'`…`'xhigh'`, `'none'`), or `{ level, budgetTokens, includeThoughts }` |
 | `limits` | — | run caps `maxInputTokens` / `maxOutputTokens` / `maxReasoningTokens` / `maxTotalTokens` + `perCall` output caps |
 | `maxToolCalls` / `maxPlanSteps` | ∞ / 8 | tool calls per run / steps per plan |
-| `compaction` | auto, ½ of 128k (a local model: its own window) | `{ auto, contextWindowTokens, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` — never more than the model's window |
+| `compaction` | auto, at 85% of a 128k window (a local model: its own) | `{ auto, contextWindowTokens, thresholdRatio, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` — judged on the whole context (fixed prompt + transcript + step log), never more than the model's window |
 | `promptCaching` | `true` | stable system prefixes, Anthropic breakpoints, OpenAI cache key |
 | `vision` / `inputs` | inferred | what the model takes as attachments (`run(goal, { images, files })`); see `agent.capabilities` |
 | `systemPrompt` | — | prepended to every phase |

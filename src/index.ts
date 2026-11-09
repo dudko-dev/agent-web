@@ -96,7 +96,7 @@ export {
 export type { Learning, LearningConfig, SaveSkillInput, SkillStore } from './learning.js'
 
 // ── Config ───────────────────────────────────────────────────────────────────
-export { resolveConfig } from './config.js'
+export { resolveBudgets, resolveConfig } from './config.js'
 export type {
   BrowserAgentConfig,
   ResolvedConfig,
@@ -242,6 +242,7 @@ export {
   estimateTokens,
   estimateMessagesTokens,
   resolveCompaction,
+  DEFAULT_COMPACTION_THRESHOLD_RATIO,
 } from './memory/compress.js'
 export type { CompressOptions, CompactionConfig, ResolvedCompaction } from './memory/compress.js'
 

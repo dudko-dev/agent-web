@@ -81,7 +81,11 @@ test('fitCompactionToWindow caps the window and everything sized from it', () =>
   const configured = { contextWindowTokens: 8000, thresholdTokens: 6000 }
   const fitted = fitCompactionToWindow(resolveCompaction(configured), configured, 4096)
   assert.equal(fitted.contextWindowTokens, 4096)
-  assert.equal(fitted.thresholdTokens, 2048)
+  // A threshold set for a larger window comes down to 95% of the model's real one...
+  assert.equal(fitted.thresholdTokens, 3891)
+  // ...and an unset one is the default share (85%) of it.
+  const bare = fitCompactionToWindow(resolveCompaction({}), undefined, 4096)
+  assert.equal(bare.thresholdTokens, 3481)
   assert.equal(fitted.clearToolResultsAfterTokens, 1024)
   assert.equal(fitted.maxToolOutputChars, 4096)
   assert.equal(fitted.keepToolResults, 1)
