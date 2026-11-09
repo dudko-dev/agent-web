@@ -669,6 +669,8 @@ export const createWebFetchTool = (options: IWebFetchOptions = {}): AgentTool =>
         const page = html ? htmlToText(raw.text) : { text: raw.text }
         const text = page.text.slice(0, cap)
         run?.emit({ type: 'egress.request', url: shown, allowed: true, status: res.status })
+        // Provenance for a lesson written later in the run: recorded here, not by the model.
+        run?.fetched?.push(shown)
         return {
           url: res.url || url,
           status: res.status,

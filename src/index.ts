@@ -78,9 +78,22 @@ export {
   renderSkillIndex,
   renderActiveSkills,
   createSkillTools,
+  learnedPreamble,
   SKILL_TOOL_NAMES,
 } from './skills.js'
-export type { Skill, LoadSkillOptions } from './skills.js'
+export type { Skill, SkillOrigin, LoadSkillOptions } from './skills.js'
+
+// ── Learning: the agent's notebook of lessons (skills it wrote itself) ───────
+export {
+  createLearning,
+  MemorySkillStore,
+  VfsSkillStore,
+  findSecret,
+  normalizeSkillName,
+  SAVE_SKILL_TOOL,
+  FORGET_SKILL_TOOL,
+} from './learning.js'
+export type { Learning, LearningConfig, SaveSkillInput, SkillStore } from './learning.js'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 export { resolveConfig } from './config.js'

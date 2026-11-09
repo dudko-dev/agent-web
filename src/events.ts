@@ -56,6 +56,19 @@ export type AgentEvent =
     }
   /** A skill's instructions entered the context (picked by the planner, or loaded by a tool call). */
   | { type: 'skill.activated'; name: string; by: 'plan' | 'tool' }
+  /** The agent wrote a lesson down as a skill (`config.learning`). */
+  | {
+      type: 'skill.learned'
+      name: string
+      description: string
+      /** true when it rewrote an earlier lesson of the same name. */
+      update: boolean
+      chars: number
+      /** What it consulted: the sources it named, then the pages web_fetch read in the run. */
+      sources: string[]
+    }
+  /** A lesson was deleted (by the agent's forget_skill, or the host's forgetSkill). */
+  | { type: 'skill.forgotten'; name: string }
   /** find_tools activated more tools (large-catalogue search mode). */
   | { type: 'tools.discovered'; step?: IPlanStep; query: string; names: string[] }
   /** A tool call is waiting for the user's consent (see `toolApproval`). */

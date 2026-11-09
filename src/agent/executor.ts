@@ -3,6 +3,7 @@ import { contextOverflowOf } from '../context-window.js'
 import { runToolLoop } from '../llm/tool-loop.js'
 import { timeoutSignal } from '../llm/util.js'
 import { renderActiveSkills, renderSkillIndex } from '../skills.js'
+import { WEB_FETCH_TOOL } from '../tools/egress.js'
 import { renderCatalog } from '../tools/prompted.js'
 import { FIND_TOOLS_NAME } from '../tools/search.js'
 import { BLOCKER, type IPlanStep, type IStepResult, type IUsage } from './loop-types.js'
@@ -30,15 +31,17 @@ const activeToolNames = (ctx: AgentContext, step: IPlanStep): string[] | undefin
   const builtins = [...(ctx.builtinTools ?? [])].filter((n) => ctx.tools[n])
   const suggested = step.suggestedTools ?? []
   const known = suggested.filter((n) => ctx.tools[n])
+  // The notebook's tools are not the plan's to hand out: a narrowed step still gets them.
+  const notebook = (ctx.learning?.tools ?? []).filter((n) => ctx.tools[n])
   if (strategy === 'search') {
     const discovered = (ctx.discovered?.() ?? []).slice(-16)
-    return [...new Set([...builtins, ...known, ...discovered])]
+    return [...new Set([...builtins, ...notebook, ...known, ...discovered])]
   }
   if (strategy !== 'plan-narrowed') return undefined
   // A step that named tools but all were unknown still wants tools: fall back to
   // the full set rather than stalling with zero.
   if (known.length === 0 && suggested.length > 0) return Object.keys(ctx.tools)
-  return [...new Set([...known, ...builtins])]
+  return [...new Set([...known, ...builtins, ...notebook])]
 }
 
 const summaryOf = (text: string, toolCallCount: number): string => {
@@ -84,6 +87,7 @@ export const executeStep = async (
     activeSkills: active.length ? renderActiveSkills(active) : undefined,
     searchMode: searchMode && Boolean(ctx.tools[FIND_TOOLS_NAME]),
     updates: ctx.userUpdates?.(),
+    ...(ctx.learning?.nudge ? { learning: { fetch: Boolean(ctx.tools[WEB_FETCH_TOOL]) } } : {}),
   })
 
   const loop = await runToolLoop(ctx.executorModel, {

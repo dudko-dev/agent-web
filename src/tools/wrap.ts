@@ -30,6 +30,10 @@ export interface ToolRunContext {
   approve: (toolName: string, input: unknown, readOnly: boolean) => Promise<void>
   /** The run's control, when the host passed one: subagents register here so they can be listed and stopped. */
   control?: RunControlPort
+  /** The run's id (for provenance). */
+  runId?: string
+  /** Pages web_fetch read in this run (origin + path), kept as provenance for any lesson the run writes. */
+  fetched?: string[]
 }
 
 /** Read the run context the agent passes to a tool's execute (undefined outside a run). */
@@ -91,6 +95,9 @@ export interface WrapToolsOptions {
   maxToolOutputChars: number
   /** The run's control, handed to tools through their run context. */
   control?: RunControlPort
+  runId?: string
+  /** Shared with every call of the run, so a lesson can name what the run read. */
+  fetched?: string[]
 }
 
 /**
@@ -138,6 +145,8 @@ export const wrapToolsForRun = (tools: ToolSet, o: WrapToolsOptions): ToolSet =>
             addUsage: o.addUsage,
             approve: (toolName, toolInput, ro) => gate(toolName, toolInput, ro),
             ...(o.control ? { control: o.control } : {}),
+            ...(o.runId ? { runId: o.runId } : {}),
+            ...(o.fetched ? { fetched: o.fetched } : {}),
           }
           return execute.call(t, input, { ...(options as object), agentRun })
         }
