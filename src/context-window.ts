@@ -122,13 +122,17 @@ export const fitCompactionToWindow = (
     modelWindow ?? Infinity,
   )
   if (window === resolved.contextWindowTokens && modelWindow === undefined) return resolved
-  const half = Math.floor(window / 2)
   const quarter = Math.floor(window / 4)
   const clearAfter = configured?.clearToolResultsAfterTokens
   return {
     ...resolved,
     contextWindowTokens: window,
-    thresholdTokens: Math.min(configured?.thresholdTokens ?? half, half),
+    // A threshold the host set for a larger window comes down with the window: never past 95%
+    // of what the model really has (the answer and a step's growth need the rest).
+    thresholdTokens: Math.min(
+      configured?.thresholdTokens ?? Math.floor(window * resolved.thresholdRatio),
+      Math.floor(window * 0.95),
+    ),
     // 0 = never stays never.
     clearToolResultsAfterTokens: clearAfter === 0 ? 0 : Math.min(clearAfter ?? quarter, quarter),
     // One result may take a quarter of the window (~4 chars per token).
@@ -160,6 +164,30 @@ export const toolDefinitionTokens = async (tools: ToolSet): Promise<number> => {
   )
   return sizes.reduce((a, b) => a + b, 0)
 }
+
+/** What every call carries whatever the transcript: stage instructions, the goal, the plan, the state. */
+export const BASE_PROMPT_TOKENS = 1500
+/** Under tool search the model is sent only the built-ins and the tools found so far. */
+export const SEARCH_TOOLS_ALLOWANCE = 3000
+
+/**
+ * The tokens of a call's prompt that do not come from the transcript or the step log - the
+ * stage instructions, the tool definitions, the skills - so that compaction can judge how full the
+ * window really is (history + log alone say nothing about a 15k-token tool catalogue).
+ */
+export const promptOverheadTokens = (p: {
+  systemPrompt?: string
+  /** `toolDefinitionTokens` of everything the agent could offer. */
+  toolTokens: number
+  /** Tool search: only a few definitions are sent at a time. */
+  searching: boolean
+  /** The rendered skills index and the active skills' instructions. */
+  skillsText: string
+}): number =>
+  BASE_PROMPT_TOKENS +
+  estimateTokens(p.systemPrompt ?? '') +
+  (p.searching ? Math.min(p.toolTokens, SEARCH_TOOLS_ALLOWANCE) : p.toolTokens) +
+  estimateTokens(p.skillsText)
 
 /** 'auto' switches to tool search once the definitions would take this share of the window. */
 export const TOOL_SEARCH_WINDOW_SHARE = 0.25

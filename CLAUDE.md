@@ -58,6 +58,10 @@ behind every decision.
 - `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
   `protocol` (postMessage shapes).
 - `src/{thinking,limits,caching,skills,images}.ts` — see docs/capabilities.md.
+- Compaction (`memory/compress.ts`, `context-window.ts`) is judged on prompt + transcript + step log together
+  against `thresholdRatio` (0.85) of the window; `estimateTokens` is calibrated high on Claude's tokenizer
+  (1.1-1.4x real, never below): keep it that way. `agent.usage` / `sessionUsage` count from the usage as it
+  arrives (`charge`), not at the end of a run; per-call output caps default to shares of the window.
 - `src/context-window.ts` — the model's real window (read from WebLLM models),
   compaction sized to it, tool search by definition size, the clear
   `ContextWindowExceededError`.

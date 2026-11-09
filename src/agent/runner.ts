@@ -1,12 +1,13 @@
 import type { LanguageModel, ToolSet } from 'ai'
 import { resolveCaching } from '../caching.js'
 import type { BrowserAgentConfig } from '../config.js'
-import { resolveConfig } from '../config.js'
+import { resolveBudgets, resolveConfig } from '../config.js'
 import type { AgentEvent, AgentEventHandler, UsagePhase } from '../events.js'
 import { checkLimits, type LimitBreach } from '../limits.js'
 import {
   contextWindowOf,
   fitCompactionToWindow,
+  promptOverheadTokens,
   TOOL_SEARCH_WINDOW_SHARE,
   toolDefinitionTokens,
 } from '../context-window.js'
@@ -20,7 +21,14 @@ import {
 import type { StoredMessage } from '../memory/store.js'
 import { buildModelFromStage, resolveStage } from '../providers/registry.js'
 import { defaultPrompts, type Prompts } from '../prompts.js'
-import { createSkillTools, defineSkill, SKILL_TOOL_NAMES, type Skill } from '../skills.js'
+import {
+  createSkillTools,
+  defineSkill,
+  renderActiveSkills,
+  renderSkillIndex,
+  SKILL_TOOL_NAMES,
+  type Skill,
+} from '../skills.js'
 import {
   createApprovalState,
   type ToolApprovalMode,
@@ -164,6 +172,15 @@ export interface Agent {
    */
   readonly toolStrategy: EffectiveToolStrategy
   /**
+   * Tokens this agent has spent - on every run and manual compaction, stopped or failed ones
+   * included - since it was built or `resetUsage()` was called. A snapshot (a copy).
+   */
+  readonly usage: IUsage
+  /** The same for one memory session (default: the agent's `sessionId`). A snapshot. */
+  sessionUsage(sessionId?: string): IUsage
+  /** Zero the counters (the whole agent and every session). */
+  resetUsage(): void
+  /**
    * The context window the agent fits its runs into: the configured one, never
    * more than the model's own (read from local WebLLM models).
    */
@@ -255,6 +272,9 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     .filter((w): w is number => w !== undefined)
   const modelWindow = modelWindows.length ? Math.min(...modelWindows) : undefined
   cfg.compaction = fitCompactionToWindow(cfg.compaction, config.compaction, modelWindow)
+  // The per-call output caps follow the window that is really in use (a 4k local model cannot
+  // hold a 3000-token answer next to its prompt); what the host set explicitly still wins.
+  cfg.budgets = resolveBudgets(config, cfg.compaction.contextWindowTokens)
   // A known small window means compacting by tokens even without a configured
   // `compaction` (the legacy chars threshold knows nothing of the window).
   const byTokens = Boolean(config.compaction) || modelWindow !== undefined
@@ -289,8 +309,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   // 'auto' searches instead of listing once the catalogue is long, or once its
   // definitions would take a large share of the window (a few MCP tools with
   // rich schemas can fill a local model's 4k window on their own).
-  const toolTokens =
-    cfg.toolSelectionStrategy === 'auto' ? await toolDefinitionTokens(baseTools) : 0
+  const toolDefTokens = await toolDefinitionTokens(baseTools)
+  const toolTokens = cfg.toolSelectionStrategy === 'auto' ? toolDefTokens : 0
   const strategy: EffectiveToolStrategy =
     cfg.toolSelectionStrategy === 'auto'
       ? catalog.length > cfg.toolSearchThreshold ||
@@ -311,6 +331,18 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     }
   }
   const builtinTools = new Set<string>(reserved)
+  // How much of the window the fixed part of every prompt takes (see promptOverheadTokens). The
+  // skills are read live: a lesson the agent writes mid-run grows the index.
+  const fixedPromptTokens = (active: Skill[]): number =>
+    promptOverheadTokens({
+      systemPrompt: config.systemPrompt,
+      toolTokens: toolDefTokens,
+      searching: strategy === 'search',
+      skillsText: `${renderSkillIndex(skills)}\n${renderActiveSkills(active)}`,
+    })
+  // What the summariser is shown at most: a share of the window, so a long transcript is
+  // summarised whole rather than cut to its last pages first.
+  const summaryInputTokens = Math.floor(cfg.compaction.contextWindowTokens * 0.6)
 
   // Parameter hints for prompted catalogues, derived once from the schemas.
   const hints = new Map<string, string>()
@@ -342,6 +374,16 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   log.info(
     `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${skills.map((s) => s.name).join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
   )
+
+  // What this agent has spent, counted call by call as the usage arrives - so a run that is
+  // stopped or fails still counts what it used, a resumed run adds only what THIS process spent,
+  // and a subagent's tokens (charged to its parent run) are counted once. Whole agent and per session.
+  let spentAll: IUsage = emptyUsage()
+  const spentBySession = new Map<string, IUsage>()
+  const charge = (sessionId: string, u: IUsage): void => {
+    spentAll = addUsage(spentAll, u)
+    spentBySession.set(sessionId, addUsage(spentBySession.get(sessionId) ?? emptyUsage(), u))
+  }
 
   const runCore = async (
     goal: string,
@@ -383,6 +425,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     const isAborted = (): boolean => opts.signal?.aborted === true
     const bumpUsage = (u: IUsage, phase: UsagePhase): void => {
       usage = addUsage(usage, u)
+      charge(sessionId, u)
       result.usage = usage
       emit({ type: 'usage', phase, usage: u })
     }
@@ -518,11 +561,14 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     // known; the legacy compressAfterChars path compacts after the run).
     if (config.memory && byTokens && cfg.compaction.auto && history.length > 0) {
       const before = estimateMessagesTokens(history)
-      if (before > cfg.compaction.thresholdTokens) {
+      // The window holds the fixed prompt as well as the transcript.
+      const fixed = fixedPromptTokens(skills.filter((s) => activeSkillNames.has(s.name)))
+      if (before + fixed > cfg.compaction.thresholdTokens) {
         const compacted = await compressHistory(history, synthesizerModel, {
-          thresholdTokens: cfg.compaction.thresholdTokens,
+          thresholdTokens: Math.max(1, cfg.compaction.thresholdTokens - fixed),
           keepRecent: cfg.compaction.keepRecentTurns,
           summaryMaxTokens: cfg.budgets.compaction,
+          maxInputTokens: summaryInputTokens,
           timeoutMs: cfg.chatTimeoutMs,
           abortSignal: opts.signal,
           onUsage: (u) => bumpUsage(u, 'compact'),
@@ -774,11 +820,19 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         // Auto-compaction of the run's step log when it outgrows the threshold.
         if (cfg.compaction.auto) {
           const before = estimateTokens(done.join('\n'))
-          if (before > cfg.compaction.thresholdTokens) {
+          // What the log may take: the threshold minus the fixed prompt and the transcript.
+          const room = Math.max(
+            1,
+            cfg.compaction.thresholdTokens -
+              fixedPromptTokens(skills.filter((s) => activeSkillNames.has(s.name))) -
+              estimateMessagesTokens(history),
+          )
+          if (before > room) {
             const compacted = await compactSteps(done, synthesizerModel, {
-              thresholdTokens: cfg.compaction.thresholdTokens,
+              thresholdTokens: room,
               keepRecent: cfg.compaction.keepRecentSteps,
               summaryMaxTokens: cfg.budgets.compaction,
+              maxInputTokens: summaryInputTokens,
               timeoutMs: cfg.chatTimeoutMs,
               abortSignal: opts.signal,
               onUsage: (u) => bumpUsage(u, 'compact'),
@@ -901,12 +955,14 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         try {
           const transcript = await config.memory.load(sessionId)
           const before = estimateMessagesTokens(transcript)
+          const fixed = fixedPromptTokens(skills.filter((s) => activeSkillNames.has(s.name)))
           const compacted = await compressHistory(transcript, synthesizerModel, {
             ...(byTokens
               ? {
-                  thresholdTokens: cfg.compaction.thresholdTokens,
+                  thresholdTokens: Math.max(1, cfg.compaction.thresholdTokens - fixed),
                   keepRecent: cfg.compaction.keepRecentTurns,
                   summaryMaxTokens: cfg.budgets.compaction,
+                  maxInputTokens: summaryInputTokens,
                 }
               : { maxChars: cfg.compressAfterChars }),
             timeoutMs: cfg.chatTimeoutMs,
@@ -973,11 +1029,13 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       thresholdTokens: cfg.compaction.thresholdTokens,
       keepRecent: cfg.compaction.keepRecentTurns,
       summaryMaxTokens: cfg.budgets.compaction,
+      maxInputTokens: summaryInputTokens,
       force: o.force ?? true,
       timeoutMs: cfg.chatTimeoutMs,
       abortSignal: o.signal,
       onUsage: (u) => {
         usage = addUsage(usage, u)
+        charge(sessionId, u)
       },
     })
     if (compacted === transcript)
@@ -1001,6 +1059,16 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     },
     listTools: () => catalog.map((e) => ({ ...e })),
     toolStrategy: strategy,
+    get usage() {
+      return { ...spentAll }
+    },
+    sessionUsage: (sessionId?: string) => ({
+      ...(spentBySession.get(sessionId ?? cfg.sessionId) ?? emptyUsage()),
+    }),
+    resetUsage: () => {
+      spentAll = emptyUsage()
+      spentBySession.clear()
+    },
     contextWindowTokens: cfg.compaction.contextWindowTokens,
     get skills() {
       return skills.map((s) => ({

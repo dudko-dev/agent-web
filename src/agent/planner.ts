@@ -1,10 +1,10 @@
 import { contextOverflowOf } from '../context-window.js'
 import { generate, generateStructured } from '../llm/generate.js'
-import { normalizeUsage } from '../llm/util.js'
+import { normalizeUsage, usageOfError } from '../llm/util.js'
 import { parsePlannerResponse } from '../parse.js'
 import type { ToolCallMode } from '../prompts.js'
 import { renderSkillIndex } from '../skills.js'
-import type { IPlan, IUsage } from './loop-types.js'
+import { addUsage, type IPlan, type IUsage } from './loop-types.js'
 import { imageRefusal, promptFor, stageCall, type AgentContext } from './internal.js'
 import { PlanSchema } from './schemas.js'
 
@@ -78,6 +78,8 @@ export const createPlan = async (
     return kept
   }
 
+  // Tokens a failed structured attempt cost, added to the fallback call's.
+  let wasted = normalizeUsage()
   if (ctx.plannerMode === 'native') {
     try {
       const result = await generateStructured(ctx.plannerModel, PlanSchema, commonFor('native'))
@@ -96,6 +98,7 @@ export const createPlan = async (
       // Nor is a prompt too long for the window: the fallback would fail the same way.
       const overflow = contextOverflowOf(err, ctx.plannerModel)
       if (overflow) throw overflow
+      wasted = usageOfError(err)
       // Graceful degradation: fall back to the salvage parser instead of failing.
       ctx.log.warn('planner: native structured output failed, salvaging:', asMessage(err))
       ctx.emit({ type: 'retry', phase: 'plan', attempt: 1, error: asMessage(err) })
@@ -121,7 +124,7 @@ export const createPlan = async (
         cap,
       ),
     },
-    usage: normalizeUsage(result.usage),
+    usage: addUsage(wasted, normalizeUsage(result.usage)),
     skills: validSkills(parsed.skills),
   }
 }

@@ -8,6 +8,7 @@ implements the same features with the same field and event names.
 
 - [Thinking](#thinking)
 - [Token limits and step caps](#token-limits-and-step-caps)
+- [Usage: what a session has spent](#usage-what-a-session-has-spent)
 - [Context management and compaction](#context-management-and-compaction)
 - [Prompt caching](#prompt-caching)
 - [Token efficiency](#token-efficiency)
@@ -88,11 +89,34 @@ which cap ended the run. `checkLimits(usage, limits)` is exported.
 `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider
 reports them. The legacy `budgets` option still works; `limits.perCall` wins.
 
-`perCall` caps the output of ONE model call per phase. The defaults are the numbers in the
-example above: planner 800, executor 1200, replanner 400, **synthesizer 3000** (the answer the
-user reads), compaction 1024. A thinking model spends part of its cap on thoughts, so raise
-the cap together with `thinking`; the executor's cap also bounds what it can write into one
-tool call (a long file body, say).
+`perCall` caps the output of ONE model call per phase. Unless you set them, the defaults are
+shares of the **context window** (`compaction.contextWindowTokens`, or a local model's own): at
+the default 128k window they are planner 800, executor 1200, replanner 400, **synthesizer 3000**
+(the answer the user reads) and compaction 1024; a 32k window gets 256 / 384 / 192 / 768 / 256, a
+4k one the floors (256 / 384 / 192 / 512 / 256) and a very large one more, up to ceilings of
+2000 / 8192 / 1500 / 8192 / 4096. `resolveBudgets(config, window)` returns them. A thinking model
+spends part of its cap on thoughts, so raise the cap together with `thinking`; the executor's cap
+also bounds what it can write into one tool call (a long file body, say).
+
+## Usage: what a session has spent
+
+`RunResult.usage` is one run's tokens (`inputTokens`, `outputTokens`, `totalTokens`, and
+`reasoningTokens` / `cachedInputTokens` / `cacheWriteTokens` when the provider reports them).
+The agent keeps the running total itself:
+
+```ts
+agent.usage                  // everything this agent has spent, over all its runs (a snapshot)
+agent.sessionUsage()         // the same for the agent's session (or sessionUsage('other-chat'))
+agent.resetUsage()           // start counting again
+```
+
+It is counted call by call as the usage arrives - so a run that is stopped or fails still counts
+what it used, a resumed run adds only what THIS process spent after the checkpoint, a subagent's
+tokens (charged to its parent run) count once, and so do the manual `agent.compact()` calls.
+That includes a model answer that could not be parsed and was retried (the planner's and the
+replanner's structured attempt, then the prompted fallback): both calls were paid for and both
+are counted. (`useAgent().totalUsage` in the React package is a conversation's total, kept by the
+UI; this is the core's own counter.)
 
 ## Context management and compaction
 
@@ -119,7 +143,8 @@ createAgent({
   compaction: {
     auto: true,                  // default
     contextWindowTokens: 128_000,
-    thresholdTokens: 64_000,     // default: half the window
+    thresholdRatio: 0.85,        // default: compact at 85% of the window (0 < ratio <= 1)
+    // thresholdTokens: 100_000, // ...or an absolute number; it wins over the ratio
     keepRecentTurns: 4,          // transcript messages kept verbatim
     keepRecentSteps: 3,          // run steps kept verbatim
     summaryMaxTokens: 1024,
@@ -131,10 +156,10 @@ createAgent({
 await agent.compact()           // manual: summarise the stored transcript now
 ```
 
-- **History** — before planning (and after the run) a transcript above the
-  threshold is summarised into one message, keeping the last `keepRecentTurns`.
-- **Run trace** — between steps a step log above the threshold is folded into a
-  summary, keeping the last `keepRecentSteps`.
+- **History** — before planning (and after the run) a transcript that no longer fits is
+  summarised into one message, keeping the last `keepRecentTurns`.
+- **Run trace** — between steps a step log that no longer fits is folded into a summary,
+  keeping the last `keepRecentSteps`.
 - **Tool results** — every tool's model-facing output is capped at
   `maxToolOutputChars` (via the AI SDK `toModelOutput`); events and the trace
   still get the full result.
@@ -144,6 +169,30 @@ await agent.compact()           // manual: summarise the stored transcript now
   with a one-line stub ("… result cleared — call the tool again if you still
   need it"), keeping the newest `keepToolResults`. The calls stay, so the model
   knows what it did. Clearing is sticky, so the cached prefix doesn't flip back.
+
+**What "fits" means.** The threshold is a share of the window (85% by default) and it is
+judged on the **whole context** of the next call: the fixed prompt (stage instructions, tool
+definitions, the skills index and active skills, your `systemPrompt`) **plus** the transcript
+**plus** the run's step log. Judging each part alone would let a long transcript and a long log
+each stay under the line while together overflowing the window. The rest is room for the answer
+and for what one step adds before the next check. The fixed prompt is estimated (about 1 500
+tokens, your `systemPrompt`, the tool definitions, the skills; under tool search only a few
+definitions are sent, so the tools count at most 3 000).
+
+**The estimate** counts by kind of character, because text is not one thing: letters ~2.5 to a
+token, digits and punctuation about one each, a space a quarter, a newline one, other scripts
+(Russian) two characters, CJK and emoji one. It was calibrated against Claude's tokenizer over
+prose, markdown, code, JSON, a table, Russian and a mix, and comes out **1.1-1.4x the real count
+and never below it** (a flat "4 characters a token" was 0.4-0.7x for everything but Russian: JSON
+and code run 1.6-2.4 characters a token, and tool definitions 2x what 4 would give). It leans high
+on purpose: compacting a little early is cheap, overflowing the window is a failed run. So at the
+default 85%, a Claude model has roughly 70-75% of its window really used when compaction starts;
+a tokenizer that packs tighter (OpenAI, Gemini) starts a little earlier still. Raise
+`thresholdRatio` (0.9, 0.95) to compact later. `estimateTokens` is exported. For a local model the
+window is its own and the threshold follows it (never past 95% of it).
+
+**What the summariser is shown** is the newest part of what is being folded that fits 60% of the
+window (it used to be the last 48 000 characters, whatever the window).
 
 Each compaction emits `context.compacted { scope, beforeTokens, afterTokens }`
 (`scope`: `'history' | 'trace' | 'tool-results'`) and, when a model summarised,
