@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { asSchema } from 'ai'
 import { z } from 'zod'
 import {
   checkLimits,
@@ -739,5 +740,275 @@ test('subagent (worker): runs behind a message channel, calls a proxied host too
   // The parent gate saw both the delegation and the host tool the child called.
   assert.deepEqual(asked, ['worker', 'add_note'])
   assert.ok(events.some((e) => e.type === 'subagent.event' && e.event.type === 'step.tool-call'))
+  for (const p of opened) p.close()
+})
+
+// ── subagent profiles ─────────────────────────────────────────────────────
+// The parent model picks a NAMED way to run the same subagent per call: a
+// different model, different params, a different context. The proof is which
+// model's call log the child shows up in — not what the answer says.
+
+/** A child that answers with `answer` and records every call it was given. */
+const childModel = (answer: string) =>
+  scriptedModel((info) =>
+    stageOf(info) === 'planner'
+      ? { text: plan(['Work on it']) }
+      : stageOf(info) === 'executor'
+        ? { text: `worked: ${answer}` }
+        : { text: answer },
+  )
+
+test('subagent profiles: the parent chooses per call, and the child runs on THAT model', async () => {
+  const base = childModel('BASE-ANSWER')
+  const deep = childModel('DEEP-ANSWER')
+  const parent = scriptedModel((info) => {
+    const stage = stageOf(info)
+    if (stage === 'planner') return { text: plan(['Delegate twice']) }
+    if (stage === 'executor') {
+      return executorReply(info, [
+        { name: 'research', args: { task: 'quick lookup' } },
+        { name: 'research', args: { task: 'hard question', profile: 'deep' } },
+      ])
+    }
+    return { text: 'done' }
+  })
+  const agent = await createAgent({
+    model: parent.model,
+    tools: {
+      research: createSubagentTool({
+        name: 'researcher',
+        description: 'Research a question',
+        config: { model: base.model },
+        profiles: {
+          deep: {
+            description: 'A strong model for a hard question',
+            config: { model: deep.model },
+          },
+        },
+      }),
+    },
+  })
+  const { events, onEvent } = collect()
+  const result = await agent.run('research two things', { onEvent })
+
+  const outputs = result.trace[0].toolCalls.map((c) => c.output)
+  assert.deepEqual([...outputs].sort(), ['BASE-ANSWER', 'DEEP-ANSWER'])
+  // Each child reached ONLY its own model, and each model saw only its own task.
+  assert.ok(base.calls.length > 0 && deep.calls.length > 0)
+  assert.ok(base.calls.every((c) => !c.user.includes('hard question')))
+  assert.ok(deep.calls.every((c) => !c.user.includes('quick lookup')))
+  assert.ok(deep.calls.some((c) => c.user.includes('hard question')))
+
+  const starts = events.flatMap((e) => (e.type === 'subagent.start' ? [e] : []))
+  assert.equal(starts.length, 2)
+  assert.deepEqual(
+    starts.map((e) => e.profile),
+    starts.map((e) => (e.task === 'hard question' ? 'deep' : undefined)),
+    'the event names the profile that was chosen, and omits it for the default',
+  )
+})
+
+test("subagent profiles: a profile can change the child's context and params, not just its model", async () => {
+  const base = childModel('BASE')
+  const careful = childModel('CAREFUL')
+  const tool = createSubagentTool({
+    name: 'analyst',
+    description: 'Analyse',
+    config: { model: base.model, systemPrompt: 'BASE-CONTEXT', maxIterations: 6 },
+    profiles: {
+      careful: {
+        description: 'Slow and careful',
+        config: { model: careful.model, systemPrompt: 'CAREFUL-CONTEXT', maxIterations: 1 },
+      },
+    },
+  }) as { execute: (i: unknown, o: unknown) => Promise<string> }
+  const run = (input: unknown) => tool.execute(input, { toolCallId: 't', messages: [] })
+
+  assert.equal(await run({ task: 'one' }), 'BASE')
+  assert.equal(await run({ task: 'two', profile: 'careful' }), 'CAREFUL')
+  assert.ok(base.calls.every((c) => c.system.includes('BASE-CONTEXT')))
+  assert.ok(base.calls.every((c) => !c.system.includes('CAREFUL-CONTEXT')))
+  assert.ok(careful.calls.every((c) => c.system.includes('CAREFUL-CONTEXT')))
+})
+
+test('subagent profiles: the tool tells the parent what each profile is for, in both modes', async () => {
+  const m = childModel('x').model
+  const withProfiles = createSubagentTool({
+    name: 'r',
+    description: 'Research a question',
+    config: { model: m },
+    profiles: {
+      fast: { description: 'A quick shallow check', config: { model: m } },
+      deep: { description: 'A thorough investigation', config: { model: m } },
+    },
+  })
+  const schema = (await asSchema(withProfiles.inputSchema as never).jsonSchema) as {
+    properties: Record<string, { enum?: string[] }>
+    required: string[]
+  }
+  assert.deepEqual(schema.properties.profile.enum, ['fast', 'deep'])
+  assert.deepEqual(schema.required, ['task'], 'profile stays optional')
+  // The DESCRIPTION carries what each is for: a prompted-mode model only reads the
+  // catalogue and a one-line shape, and would never learn what "deep" means.
+  assert.match(String(withProfiles.description), /- fast: A quick shallow check/)
+  assert.match(String(withProfiles.description), /- deep: A thorough investigation/)
+  assert.equal(
+    (withProfiles as { promptHint?: string }).promptHint,
+    '{ task: string, profile?: "fast" | "deep" }',
+  )
+
+  // No profiles: the tool is exactly what it was.
+  const plain = createSubagentTool({ name: 'r', description: 'Research', config: { model: m } })
+  const plainSchema = (await asSchema(plain.inputSchema as never).jsonSchema) as {
+    properties: Record<string, unknown>
+  }
+  assert.deepEqual(Object.keys(plainSchema.properties), ['task'])
+  assert.equal(plain.description, 'Research')
+  assert.equal((plain as { promptHint?: string }).promptHint, '{ task: string }')
+})
+
+test('subagent profiles: an unknown name is refused before any child is started', async () => {
+  const base = childModel('BASE')
+  const tool = createSubagentTool({
+    name: 'r',
+    description: 'Research',
+    config: { model: base.model },
+    profiles: {
+      fast: { description: 'Quick', config: {} },
+      deep: { description: 'Slow', config: {} },
+    },
+  }) as { execute: (i: unknown, o: unknown) => Promise<string> }
+  const run = (input: unknown) => tool.execute(input, { toolCallId: 't', messages: [] })
+
+  for (const bad of ['nope', 'constructor', '__proto__', 'toString']) {
+    await assert.rejects(
+      run({ task: 'x', profile: bad }),
+      /unknown profile .*choose one of: fast, deep/,
+    )
+  }
+  assert.equal(base.calls.length, 0, 'no child was started for any of them')
+  // An empty string is what a model sends for "none": it means the default.
+  assert.equal(await run({ task: 'x', profile: '' }), 'BASE')
+})
+
+test('subagent profiles: the parent model is told its mistake, and no delegation is announced', async () => {
+  const base = childModel('BASE')
+  const parent = scriptedModel((info) => {
+    const stage = stageOf(info)
+    if (stage === 'planner') return { text: plan(['Delegate']) }
+    if (stage === 'executor') {
+      return executorReply(info, [{ name: 'research', args: { task: 'x', profile: 'nope' } }])
+    }
+    return { text: 'ok' }
+  })
+  const agent = await createAgent({
+    model: parent.model,
+    tools: {
+      research: createSubagentTool({
+        name: 'researcher',
+        description: 'Research',
+        config: { model: base.model },
+        profiles: { deep: { description: 'Slow', config: {} } },
+      }),
+    },
+  })
+  const { events, onEvent } = collect()
+  const result = await agent.run('go', { onEvent })
+
+  const call = result.trace[0].toolCalls[0]
+  assert.equal(call.ok, false)
+  assert.match(String(call.output), /unknown profile "nope".*choose one of: deep/)
+  assert.equal(base.calls.length, 0)
+  assert.ok(
+    !events.some((e) => e.type === 'subagent.start'),
+    'a delegation that could never begin must not be announced',
+  )
+})
+
+test('subagent profiles: a profile that cannot work is refused when the tool is created', () => {
+  const m = childModel('x').model
+  const make = (opts: Record<string, unknown>) => () =>
+    createSubagentTool({ name: 'r', description: 'd', ...opts } as never)
+  assert.throws(
+    make({
+      worker: () => ({}),
+      workerConfig: { model: { providerType: 'openai', model: 'a' } },
+      profiles: { p: { description: 'x', config: { model: m } } },
+    }),
+    /profile "p" sets `config`.*worker subagent.*workerConfig/,
+  )
+  assert.throws(
+    make({
+      config: { model: m },
+      profiles: {
+        p: { description: 'x', workerConfig: { model: { providerType: 'openai', model: 'a' } } },
+      },
+    }),
+    /profile "p" sets `workerConfig`.*in-process/,
+  )
+  assert.throws(
+    make({ config: { model: m }, profiles: { p: { description: '  ' } } }),
+    /profile "p" needs a description/,
+  )
+  assert.throws(
+    make({ config: { model: m }, profiles: { ' ': { description: 'x' } } }),
+    /non-empty name/,
+  )
+})
+
+test("subagent profiles (worker): the profile's model is what the worker resolves, with its own key", async () => {
+  const resolved: { model: string; apiKey?: string }[] = []
+  const answer = childModel('WORKER-DEEP')
+  const opened: MessagePort[] = []
+  const makeWorker = () => {
+    const channel = new MessageChannel()
+    opened.push(channel.port1, channel.port2)
+    serveSubagentWorker({
+      scope: channel.port2,
+      resolveModel: (spec) => {
+        resolved.push({ model: spec.model, apiKey: spec.apiKey })
+        return answer.model
+      },
+    })
+    channel.port1.start()
+    channel.port2.start()
+    return Object.assign(channel.port1, {
+      terminate: () => {
+        channel.port1.close()
+        channel.port2.close()
+      },
+    })
+  }
+  const keys = new Map([
+    ['small-key', 'sk-small'],
+    ['deep-key', 'sk-deep'],
+  ])
+  const tool = createSubagentTool({
+    name: 'w',
+    description: 'Delegate',
+    worker: makeWorker,
+    workerConfig: { model: { providerType: 'openai', model: 'small', credentialRef: 'small-key' } },
+    credentials: {
+      getApiKey: async (ref: string) => keys.get(ref),
+      setApiKey: async () => {},
+      deleteApiKey: async () => {},
+    },
+    profiles: {
+      deep: {
+        description: 'Strong model',
+        workerConfig: {
+          model: { providerType: 'openai', model: 'big', credentialRef: 'deep-key' },
+        },
+      },
+    },
+  }) as { execute: (i: unknown, o: unknown) => Promise<string> }
+  const run = (input: unknown) => tool.execute(input, { toolCallId: 't', messages: [] })
+
+  assert.equal(await run({ task: 'a', profile: 'deep' }), 'WORKER-DEEP')
+  assert.equal(await run({ task: 'b' }), 'WORKER-DEEP')
+  assert.deepEqual(resolved, [
+    { model: 'big', apiKey: 'sk-deep' },
+    { model: 'small', apiKey: 'sk-small' },
+  ])
   for (const p of opened) p.close()
 })
