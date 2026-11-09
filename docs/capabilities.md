@@ -602,6 +602,45 @@ still waiting for a `maxConcurrent` slot is not. A child's own subagents are not
 individually stoppable — stopping the child stops them with it. The log of what each
 child does is the `subagent.event` stream, the same events the parent emits.
 
+## Egress: what the model may fetch
+
+Off by default: with no `egress` in the config the agent has **no way to make a request of its
+own** (the provider's API, your MCP servers and the tools you pass are your configuration, not
+the model's). Set it and the model gets one tool, `web_fetch({ url, maxChars? })` — a GET that
+returns the page as readable text (HTML reduced, JSON and text as they are), flagged
+`untrusted: true`: facts to use, never instructions.
+
+```ts
+createAgent({
+  model,
+  egress: { allow: ['docs.example.com', '*.github.com'] }, // or `true` for any public host over https
+})
+```
+
+The policy has the same shape and names as the server's `createSafeFetch`
+(`@dudko.dev/agent`): `allow` / `deny` (hosts, `*.subdomains`, IPs, CIDRs — deny wins, allow is
+exclusive), `allowPrivateNetwork`, `protocols` (default https), `ports` (default 443), `methods`
+(default GET), `maxResponseBytes` (2 MB), `timeoutMs` (15 s). What a page **can** enforce, it
+does *before* a request is made: scheme, port, method, credentials in the URL, the host lists,
+IP literals (loopback, private, link-local, metadata — also in IPv6, mapped or tunnelled, and the
+URL parser's `2130706433` / `0x7f.1` / `127.1` tricks) and names that are internal by shape
+(`localhost`, `*.local`, `*.internal`, a bare `intranet`). Nothing of the user's rides along (no
+cookies, no credentials, no referrer), and the answer is bounded in size and time.
+
+What a page **cannot** do, and a server can:
+
+- **Pin DNS.** A public-looking name that resolves to a private address cannot be seen from a
+  browser. CORS is the backstop (most servers will not answer a cross-origin read at all), as are
+  the browser's Private Network Access rules — but prefer an `allow` list, or give `egress.fetch`
+  a gateway that runs the server-side safe fetch and so gets the full protection.
+- **See where a redirect goes.** So a redirect **fails the request** by default (`bad-redirect`);
+  `followRedirects: true` follows it and judges only the *final* URL — after the request was made,
+  withholding what it returned.
+
+Approval: an open-internet `web_fetch` is a way to leak data through the URL, so it asks like a
+**write**; with an `allow` list it is **read-only**. Each request emits `egress.request`
+(`url` is origin and path only — no query string —, `allowed`, `status` or `reason`).
+
 ## Autonomy
 
 The default prompts make the agent act on its own:
@@ -634,6 +673,7 @@ New events (in addition to plan/step/replan/final/usage/retry/stopped/error):
 | `tool.approval-requested` | `id, name, input, readOnly, step?` |
 | `tool.approval-resolved` | `id, name, approved, reason?, automatic` |
 | `subagent.start` / `subagent.event` / `subagent.complete` / `subagent.error` | `id, name` + `task` / `event` / `text, usage` / `error` |
+| `egress.request` | `url` (origin + path), `allowed`, `status?`, `reason?` — a `web_fetch` request, allowed or refused |
 | `message.queued` | `id, text` — a `RunControl.send()` is waiting for a boundary |
 | `message.delivered` | `id, text, at: 'round' \| 'step' \| 'final'` — the model has seen it |
 
