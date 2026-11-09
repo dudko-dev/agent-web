@@ -23,8 +23,11 @@ budgets), **token limits** (input / output / thinking / total per run),
 **tool search** for catalogues of hundreds of MCP tools, **subagents** in
 Web Workers, **image / PDF / file / URL input** (with a clear error for models
 that can't take them),
-and a **virtual file system** in IndexedDB with `fs_*` tools — see
-[docs/capabilities.md](docs/capabilities.md).
+a **virtual file system** in IndexedDB with `fs_*` tools, **usage** counted live
+across a session (`agent.usage`), **steering** a run while it goes (`RunControl`),
+**resuming** an interrupted run, **egress** you switch on and bound (the model's
+`web_fetch`), and **learning** — the agent writes its own lessons down as skills
+— see [docs/capabilities.md](docs/capabilities.md).
 
 [![npm](https://img.shields.io/npm/v/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
 [![npm](https://img.shields.io/npm/dy/@dudko.dev/agent-web.svg)](https://www.npmjs.com/package/@dudko.dev/agent-web)
@@ -373,17 +376,25 @@ against it), `stopSubagent(id)` stops one subagent. `egress` (off by default) gi
 | `toolSelectionStrategy` | `'auto'` | `all` \| `plan-narrowed` \| `search` \| `auto` (search above `toolSearchThreshold`, 40, or once the definitions take ¼ of the window) |
 | `toolApproval` | autopilot | consent policy: `{ mode, rules, onRequest, timeoutMs }`; `agent.setToolApprovalMode()` |
 | `skills` | — | SKILL.md bundles (`defineSkill` / `parseSkillMarkdown` / `loadSkillFromUrl`) |
+| `egress` | off | what the **model** may fetch (`web_fetch`): `true` = any public host over https, or `{ allow, deny, protocols, allowPrivateNetwork, fetch, ... }`; a browser can't pin DNS, so prefer an `allow` list — see [Egress](docs/capabilities.md#egress-what-the-model-may-fetch) |
+| `learning` | off | the agent writes down lessons as skills (`save_skill` / `forget_skill`): `true` = this session, `{ store: new VfsSkillStore(vfs) }` = across sessions — see [Learning](docs/capabilities.md#learning-lessons-that-outlive-the-task) |
 | `thinking` / `stageThinking` | provider default | `true`, a level (`'low'`…`'xhigh'`, `'none'`), or `{ level, budgetTokens, includeThoughts }` |
 | `limits` | — | run caps `maxInputTokens` / `maxOutputTokens` / `maxReasoningTokens` / `maxTotalTokens` + `perCall` output caps |
 | `maxToolCalls` / `maxPlanSteps` | ∞ / 8 | tool calls per run / steps per plan |
 | `compaction` | auto, at 85% of a 128k window (a local model: its own) | `{ auto, contextWindowTokens, thresholdRatio, thresholdTokens, keepRecentTurns, keepRecentSteps, maxToolOutputChars }` — judged on the whole context (fixed prompt + transcript + step log), never more than the model's window |
 | `promptCaching` | `true` | stable system prefixes, Anthropic breakpoints, OpenAI cache key |
 | `vision` / `inputs` | inferred | what the model takes as attachments (`run(goal, { images, files })`); see `agent.capabilities` |
-| `systemPrompt` | — | prepended to every phase |
+| `systemPrompt` / `prompts` | — | prepended to every phase / override any phase's prompt builder |
 | `describeState` | — | serialize world state into prompt context |
 | `memory` | — | `ContextStore` (`IndexedDBStore` / `MemoryStore`); recent turns are read back into the planner prompt |
+| `sessionId` | — | names the stored conversation in `memory`, and the bucket `agent.sessionUsage()` counts into |
+| `persistence` | — | checkpoint runs (`IndexedDBRunStore` / `MemoryRunStore`) so `run(goal, { resumeFromRunId })` continues after a reload — see [Resuming](docs/capabilities.md#resuming-an-interrupted-run) |
 | `maxIterations` / `maxStepsPerTask` / `maxRevisions` | 8 / 4 / 2 | loop caps |
 | `chatTimeoutMs` | 120000 | per-call watchdog |
+| `temperature` | provider default | sampling temperature for every stage |
+| `budgets` | — | legacy per-phase output caps; `limits.perCall` wins, and the defaults are shares of the model's window |
+| `clientName` | — | sent as the openai-compatible provider name and the MCP client name |
+| `logLevel` / `logger` | `'warn'` / `console` | verbosity (`'silent' \| 'error' \| 'warn' \| 'info' \| 'debug'`) and the console-like sink the logs go to |
 | `replan` / `synthesize` | `true` | toggle phases |
 | `replanAfter` | `'failure'` | replan trigger: `'failure'` \| `'always'` \| `(stepResult) => boolean \| Promise<boolean>` |
 | `compressAfterChars` | 12000 | legacy: summarize old history past this size (when `compaction` is unset) |
@@ -393,9 +404,9 @@ against it), `stopSubagent(id)` stops one subagent. `egress` (off by default) gi
 - [docs/design.md](docs/design.md) — architecture & rationale.
 - [docs/capabilities.md](docs/capabilities.md) — thinking, limits, compaction,
   caching, skills, tool consent / autopilot, large MCP catalogues, subagents,
-  autonomy, event reference.
+  steering a running agent, learning, egress, usage, resuming, autonomy, event reference.
 - [docs/providers.md](docs/providers.md) — every provider, CORS & direct-vs-proxy.
-- [docs/security.md](docs/security.md) — the token vault & its threat model.
+- [docs/security.md](docs/security.md) — the token vault, egress and learning: threat models.
 - [docs/tasks.md](docs/tasks.md) — status & roadmap.
 - [`@dudko.dev/agent-web-react`](https://www.npmjs.com/package/@dudko.dev/agent-web-react) —
   React bindings (`useAgent`, `<AgentProvider>`, pre-styled components) ·

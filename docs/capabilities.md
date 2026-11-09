@@ -767,23 +767,55 @@ Soften it per app with `systemPrompt`, or replace any phase via `prompts`.
 
 ## Event reference
 
-New events (in addition to plan/step/replan/final/usage/retry/stopped/error):
+Everything the agent does is a typed `AgentEvent` (the union is in [`src/events.ts`](../src/events.ts)).
+Subscribe with `onEvent` (per run) or the handler you pass to `createAgent`; render them however you like.
+
+**The loop**
 
 | Event | Payload |
 | --- | --- |
-| `step.reasoning-delta` | `step, delta` |
-| `final.reasoning-delta` | `delta` |
+| `run.start` | `goal, runId?, resumed?: { completedSteps, remainingSteps }` — `runId` names the run for [`persistence`](#resuming-an-interrupted-run) |
+| `model.load` | `progress, text` — a local WebLLM model's weights downloading. In the union for hosts that forward WebLLM's `initProgressCallback`; the agent does not emit it by itself yet |
+| `plan.thought-delta` | `delta` — the planner's thought, streamed |
+| `plan.step-added` | `step, index` — a step is coherent enough to show; the plan can still change |
+| `plan.created` | `plan` — the canonical plan |
+| `plan.revised` | `plan, reason` — the replanner replaced the remaining steps |
+| `step.start` | `step, index, total` |
+| `step.text-delta` | `step, delta` |
+| `step.reasoning-delta` / `final.reasoning-delta` | `step, delta` / `delta` — the executor's / synthesizer's thoughts ([thinking](#thinking)) |
+| `step.tool-call` / `step.tool-result` | `step, name, input` / `step, name, output, ok` |
+| `step.complete` | `step, result` |
+| `replan.decision` | `mode: 'continue' \| 'revise' \| 'finish', reason, byUser?` — `byUser` when the replanner ran because the user sent a message |
+| `final.text-delta` | `delta` — the answer, streamed |
+| `final` | `text` — the answer, whole |
+| `retry` | `phase: 'plan' \| 'execute' \| 'replan' \| 'synthesize', attempt, error` |
+| `stopped` | — the run was stopped with `stop()` / an `AbortSignal` |
+| `error` | `phase: 'plan' \| 'execute' \| 'replan' \| 'synthesize' \| 'run', error` |
+
+**Budgets, context and cost**
+
+| Event | Payload |
+| --- | --- |
+| `usage` | `phase: 'plan' \| 'execute' \| 'replan' \| 'synthesize' \| 'compact' \| 'subagent', usage` — per LLM call; counted live into [`agent.usage`](#usage-what-a-session-has-spent) |
 | `budget.exceeded` | `kind: 'input' \| 'output' \| 'reasoning' \| 'total' \| 'tool-calls', tokens, cap` |
-| `context.compacted` | `scope: 'history' \| 'trace', beforeTokens, afterTokens` |
+| `context.compacted` | `scope: 'history' \| 'trace' \| 'tool-results', beforeTokens, afterTokens` |
+
+**Tools, skills and consent**
+
+| Event | Payload |
+| --- | --- |
 | `skill.activated` | `name, by: 'plan' \| 'tool'` |
-| `tools.discovered` | `step?, query, names` |
+| `tools.discovered` | `step?, query, names` — `find_tools` activated more tools |
 | `tool.approval-requested` | `id, name, input, readOnly, step?` |
 | `tool.approval-resolved` | `id, name, approved, reason?, automatic` |
-| `subagent.start` / `subagent.event` / `subagent.complete` / `subagent.error` | `id, name` + `task` / `event` / `text, usage` / `error` |
-| `skill.learned` | `name`, `description`, `update`, `chars`, `sources` — the agent wrote a lesson down (`learning`) |
+| `egress.request` | `url` (origin + path), `allowed`, `status?`, `reason?` — a `web_fetch` request, allowed or refused ([egress](#egress-what-the-model-may-fetch)) |
+| `skill.learned` | `name, description, update, chars, sources` — the agent wrote a lesson down ([learning](#learning-lessons-that-outlive-the-task)) |
 | `skill.forgotten` | `name` — a lesson was deleted |
-| `egress.request` | `url` (origin + path), `allowed`, `status?`, `reason?` — a `web_fetch` request, allowed or refused |
+
+**Subagents and steering**
+
+| Event | Payload |
+| --- | --- |
+| `subagent.start` / `subagent.event` / `subagent.complete` / `subagent.error` | `id, name` + `task, profile?` / `event` / `text, usage` / `error, stopped?` |
 | `message.queued` | `id, text` — a `RunControl.send()` is waiting for a boundary |
 | `message.delivered` | `id, text, at: 'round' \| 'step' \| 'final'` — the model has seen it |
-
-`usage` events can now carry phase `'compact'` and `'subagent'`.
