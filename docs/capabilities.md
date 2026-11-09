@@ -18,6 +18,9 @@ implements the same features with the same field and event names.
 - [Images, PDFs, files and URLs in](#images-pdfs-files-and-urls-in--and-models-that-cant-take-them)
 - [Virtual file system](#virtual-file-system)
 - [Resuming an interrupted run](#resuming-an-interrupted-run)
+- [Steering a run that is already going](#steering-a-run-that-is-already-going)
+- [Learning: lessons that outlive the task](#learning-lessons-that-outlive-the-task)
+- [Egress: what the model may fetch](#egress-what-the-model-may-fetch)
 - [Autonomy](#autonomy)
 - [Event reference](#event-reference)
 
@@ -256,7 +259,8 @@ Progressive disclosure:
    read bundled files with `read_skill_file` (both read-only, never gated).
 
 `skill.activated { name, by: 'plan' | 'tool' }` is emitted; `RunResult.skills`
-lists the skills used; `agent.skills` lists the configured ones.
+lists the skills used; `agent.skills` lists the configured ones (and, with
+[`learning`](#learning-lessons-that-outlive-the-task), the agent's own, marked `learned`).
 
 ## Tool consent and autopilot
 
@@ -602,6 +606,54 @@ still waiting for a `maxConcurrent` slot is not. A child's own subagents are not
 individually stoppable — stopping the child stops them with it. The log of what each
 child does is the `subagent.event` stream, the same events the parent emits.
 
+## Learning: lessons that outlive the task
+
+Switch on `learning` and the agent keeps a notebook. When it hits a problem and finds the way
+around it — a tool error it resolved, a wrong assumption it corrected, a procedure it had to look
+up — it writes the lesson down with `save_skill`, and the lesson **is a [skill](#skills)**: it
+shows up in the planner's `SKILLS:` index right away (even for the next step of the same run) and
+loads with `load_skill` like any other. Nothing new to learn on the reading side.
+
+```ts
+import { createAgent, VfsSkillStore, VirtualFileSystem } from '@dudko.dev/agent-web'
+
+createAgent({ model, learning: true }) // this session (the agent's lifetime)
+
+// ...or keep them as /skills/<name>/SKILL.md in the agent's file system (IndexedDB), where the
+// user can see and edit them in the files panel like any file:
+const vfs = new VirtualFileSystem()
+createAgent({ model, learning: { store: new VfsSkillStore(vfs) } })
+
+agent.skills              // [{ name, description, learned? }] - live
+agent.listLearnedSkills() // the agent's own, with origin: when, which run, revision, where it read
+await agent.forgetSkill('image-format-jpg') // one went stale
+```
+
+It is a *knowledge* feature and nothing else:
+
+- **Knowledge, never policy.** A lesson is loaded under a header saying it is the agent's own
+  hint, not an instruction from the user; the user's request and your rules win a conflict. It
+  cannot grant a permission, switch a tool on or loosen `egress`.
+- **A normal gated tool.** `save_skill` / `forget_skill` go through [tool consent](#tool-consent-and-autopilot)
+  like any write — `ask-writes` asks the user first, `read-only` refuses, a `rules` entry can deny.
+- **No secrets.** Names, descriptions, instructions and sources are scanned for API keys, tokens,
+  private keys and the like; a hit is refused to the model (and never stored). Sources keep origin
+  and path only.
+- **Yours stay yours.** A skill you configured is never overwritten or deleted by the agent; on a
+  name clash yours wins. Caps: `maxSkills` (50), `maxSkillChars` (6000), a one-line description.
+- **Provenance.** Each lesson records when it was written, by which run, its revision and — recorded
+  by the harness, not by the model — the pages `web_fetch` read in that run.
+- **Quiet by default for the rest.** Without `learning` there are no extra tools and not a word
+  more in the prompts. `learning: { nudge: false }` keeps the tools but drops the guidance that
+  tells the executor to write lessons down (and to look for a fix before giving up — with
+  `egress` on, `web_fetch` can read the docs). The notebook's tools stay callable under
+  `plan-narrowed` and `search` tool selection.
+- **Bring your own store.** `store` is any `{ list, save, remove }` (sync or async) — a database,
+  a server. A tool of your own named `save_skill` replaces the built-in one.
+
+Every save emits `skill.learned` (`name`, `description`, `update`, `chars`, `sources`); a forget
+by the model emits `skill.forgotten` (`forgetSkill(name, onEvent)` passes it to you).
+
 ## Egress: what the model may fetch
 
 Off by default: with no `egress` in the config the agent has **no way to make a request of its
@@ -673,6 +725,8 @@ New events (in addition to plan/step/replan/final/usage/retry/stopped/error):
 | `tool.approval-requested` | `id, name, input, readOnly, step?` |
 | `tool.approval-resolved` | `id, name, approved, reason?, automatic` |
 | `subagent.start` / `subagent.event` / `subagent.complete` / `subagent.error` | `id, name` + `task` / `event` / `text, usage` / `error` |
+| `skill.learned` | `name`, `description`, `update`, `chars`, `sources` — the agent wrote a lesson down (`learning`) |
+| `skill.forgotten` | `name` — a lesson was deleted |
 | `egress.request` | `url` (origin + path), `allowed`, `status?`, `reason?` — a `web_fetch` request, allowed or refused |
 | `message.queued` | `id, text` — a `RunControl.send()` is waiting for a boundary |
 | `message.delivered` | `id, text, at: 'round' \| 'step' \| 'final'` — the model has seen it |

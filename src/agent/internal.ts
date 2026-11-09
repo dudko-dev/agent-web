@@ -63,6 +63,12 @@ export interface AgentContext {
   skills?: Skill[]
   /** Skills whose instructions are in play for this run. */
   activeSkills?: () => Skill[]
+  /**
+   * Set when `config.learning` is on: whether the executor is told to write lessons down, and the
+   * notebook's tool names - callable in every step whatever the strategy narrows to (they are
+   * still wrapped and gated like any other tool).
+   */
+  learning?: { nudge: boolean; tools: string[] }
   /** Tools find_tools activated during this run (search mode). */
   discovered?: () => string[]
   /** Built-in tool names (find_tools, skill tools) — always callable. */

@@ -12,6 +12,7 @@ import type { AgentLoggerSink, LogLevel } from './logger.js'
 import type { ModelInput, StageInput } from './providers/types.js'
 import type { Prompts } from './prompts.js'
 import type { CredentialStore } from './secrets/store.js'
+import type { LearningConfig } from './learning.js'
 import type { Skill } from './skills.js'
 import type { IEgressPolicy } from './tools/egress.js'
 import type { ThinkingSetting, ThinkingStage } from './thinking.js'
@@ -87,6 +88,13 @@ export interface BrowserAgentConfig {
 
   /** Reusable instruction bundles (SKILL.md) the planner/executor can pull in. */
   skills?: Skill[]
+
+  /**
+   * Let the agent write down lessons as skills (`save_skill` / `forget_skill`) for the rest of the
+   * session: `true` keeps them in memory; `{ store: new VfsSkillStore(vfs) }` keeps them in the
+   * file system across sessions. Off by default. Knowledge only - see `learning.ts`.
+   */
+  learning?: boolean | LearningConfig
 
   /** Prepended to every phase's system prompt. */
   systemPrompt?: string

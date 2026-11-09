@@ -20,6 +20,7 @@
  * Override any builder via `BrowserAgentConfig.prompts`.
  */
 
+import { SAVE_SKILL_TOOL } from './learning.js'
 import { clip } from './llm/util.js'
 
 export type ToolCallMode = 'native' | 'prompted'
@@ -59,6 +60,8 @@ export interface ExecutorPromptContext {
   searchMode?: boolean
   /** What the user said while the run was going (`RunControl.send`), oldest first. */
   updates?: string[]
+  /** Set when `config.learning` is on (and not muted): the executor is told to keep a notebook. */
+  learning?: { fetch: boolean }
 }
 export interface ReplannerPromptContext {
   goal: string
@@ -183,6 +186,12 @@ const EXECUTOR_SEARCH = `\n- If a tool you need is not in your current tool list
 
 const EXECUTOR_SKILLS = `\n- If a skill from the SKILLS list covers this step, call load_skill to read it first (read_skill_file for its bundled files).`
 
+// Only in the executor prompt of an agent with `config.learning`: runs without it send what they always did.
+const executorLearning = (fetch: boolean): string =>
+  `\n- You keep a notebook of lessons that outlive this task. When you hit a problem and find the way around it - a tool error you resolved, a wrong assumption you corrected, a procedure you had to look up - call ${SAVE_SKILL_TOOL} once - before you give your answer - with a short name, when it applies, and what to do next time starting from the approach that works, so the problem does not happen at all (never secrets). ` +
+  `If a skill in the SKILLS list covers what you are about to do, load it first. ` +
+  `When you are stuck and do not know the fix, look for it before giving up${fetch ? ' (web_fetch can read documentation)' : ''}.`
+
 // --- replanner -------------------------------------------------------------
 
 const REPLANNER_RULES = `Judge from the current STATE and the progress vs the goal. Prefer "continue".
@@ -228,6 +237,7 @@ export const defaultPrompts: Prompts = {
       (ctx.mode === 'prompted' ? EXECUTOR_PROMPTED : EXECUTOR_NATIVE) +
       (ctx.searchMode ? EXECUTOR_SEARCH : '') +
       (ctx.skills ? EXECUTOR_SKILLS : '') +
+      (ctx.learning ? executorLearning(ctx.learning.fetch) : '') +
       section('SKILLS', ctx.skills) +
       section('ACTIVE SKILL INSTRUCTIONS', ctx.activeSkills),
     prompt: [

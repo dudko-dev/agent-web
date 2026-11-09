@@ -26,6 +26,7 @@ import {
   type ToolApprovalMode,
   TOOL_APPROVAL_MODES,
 } from '../tools/approval.js'
+import { createLearning } from '../learning.js'
 import { createEgressTools } from '../tools/egress.js'
 import { selectToolMode } from '../tools/mode.js'
 import { renderCatalog } from '../tools/prompted.js'
@@ -167,8 +168,15 @@ export interface Agent {
    * more than the model's own (read from local WebLLM models).
    */
   readonly contextWindowTokens: number
-  /** Configured skills (name + description). */
-  readonly skills: { name: string; description: string }[]
+  /** Skills (name + description) - the host's, and the agent's own lessons, marked `learned`. Live. */
+  readonly skills: { name: string; description: string; learned?: true }[]
+  /** The agent's own lessons (`config.learning`), with where each came from. Empty without it. */
+  listLearnedSkills(): Skill[]
+  /**
+   * Delete one of the agent's own lessons (a stale one). false when there is no such lesson.
+   * Pass `onEvent` to receive the `skill.forgotten` event.
+   */
+  forgetSkill(name: string, onEvent?: (event: AgentEvent) => void): Promise<boolean>
   /**
    * What the executor model can take, per attachment kind: true / false, or
    * undefined when unknown (the run tries, and a provider refusal becomes a
@@ -253,19 +261,29 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
   // Declaration order, never re-sorted: the host merges its tool sets in a
   // fixed order (so the cached prefix is stable), and a server's own order is
   // what small models were measured against (see the Node sibling's live gate).
+  const log = createLogger(cfg.logLevel, config.logger)
+  const skills: Skill[] = (config.skills ?? []).map(defineSkill)
+  const seenSkills = new Set<string>()
+  for (const s of skills) {
+    if (seenSkills.has(s.name)) throw new Error(`duplicate skill name "${s.name}"`)
+    seenSkills.add(s.name)
+  }
+  // The agent's notebook (`config.learning`): lessons join `skills` (mutated in place, so every
+  // prompt sees them at once) and the model writes them with tools of its own.
+  const learning = config.learning
+    ? await createLearning(config.learning === true ? {} : config.learning, skills, (m) =>
+        log.warn(m),
+      )
+    : undefined
+  // Read live: a lesson written mid-run is a skill the planner may pick and load_skill may load.
+  const hasSkill = (name: string): boolean => skills.some((s) => s.name === name)
   const baseTools: AgentToolSet = filterTools(
-    // What `egress` switches on (web_fetch); a tool of the same name in `tools` wins.
-    { ...createEgressTools(config.egress), ...config.tools },
+    // What `egress` switches on (web_fetch) and the notebook's tools; a tool of the same name in
+    // `tools` wins.
+    { ...createEgressTools(config.egress), ...learning?.tools, ...config.tools },
     config.availableTools,
     config.excludedTools,
   )
-
-  const skills: Skill[] = (config.skills ?? []).map(defineSkill)
-  const skillNames = new Set<string>()
-  for (const s of skills) {
-    if (skillNames.has(s.name)) throw new Error(`duplicate skill name "${s.name}"`)
-    skillNames.add(s.name)
-  }
 
   const catalog = toolCatalogOf(baseTools)
   // 'auto' searches instead of listing once the catalogue is long, or once its
@@ -282,7 +300,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       : cfg.toolSelectionStrategy
 
   const reserved = [
-    ...(skills.length ? SKILL_TOOL_NAMES : []),
+    ...(skills.length || learning ? SKILL_TOOL_NAMES : []),
     ...(strategy === 'search' ? [FIND_TOOLS_NAME] : []),
   ]
   for (const name of reserved) {
@@ -321,9 +339,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     file: config.inputs?.files ?? (textOnly ? false : undefined),
   }
   const approval = createApprovalState(config.toolApproval)
-  const log = createLogger(cfg.logLevel, config.logger)
   log.info(
-    `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${[...skillNames].join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
+    `agent ready — ${catalog.length} tool(s) (${strategy}, ~${toolTokens || '?'} tokens), window ${cfg.compaction.contextWindowTokens}${modelWindow ? ' (the model’s)' : ''}, skills: [${skills.map((s) => s.name).join(', ') || 'none'}], planner mode: ${plannerMode}, executor mode: ${executorMode}, approval: ${approval.mode}`,
   )
 
   const runCore = async (
@@ -380,12 +397,12 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
 
     // ── per-run tool state: skills, discovered tools, call budget, current step
     // Restored silently: `skill.activated` already fired in the run that activated them.
-    const activeSkillNames = new Set<string>(
-      (resumed?.skills ?? []).filter((n) => skillNames.has(n)),
-    )
+    const activeSkillNames = new Set<string>((resumed?.skills ?? []).filter(hasSkill))
     result.skills = [...activeSkillNames]
+    // Pages web_fetch reads in this run: provenance for any lesson the run writes.
+    const fetched: string[] = []
     const activateSkill = (name: string, by: 'plan' | 'tool'): void => {
-      if (activeSkillNames.has(name) || !skillNames.has(name)) return
+      if (activeSkillNames.has(name) || !hasSkill(name)) return
       activeSkillNames.add(name)
       result.skills = [...activeSkillNames]
       emit({ type: 'skill.activated', name, by })
@@ -398,7 +415,7 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     let currentStep: IPlanStep | undefined
     const counter = createCallCounter(cfg.maxToolCalls, resumed?.toolCalls)
     const builtins: ToolSet = {}
-    if (skills.length) {
+    if (skills.length || learning) {
       Object.assign(
         builtins,
         createSkillTools(skills, (s) => activateSkill(s.name, 'tool')),
@@ -430,6 +447,8 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
         countCall: counter.count,
         maxToolOutputChars: cfg.compaction.maxToolOutputChars,
         control: port,
+        runId,
+        fetched,
       },
     )
     // Take what the user sent since the last boundary and hand it to the model: recorded (a
@@ -541,6 +560,14 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
       caching,
       skills,
       activeSkills: () => skills.filter((s) => activeSkillNames.has(s.name)),
+      ...(learning
+        ? {
+            learning: {
+              nudge: typeof config.learning === 'object' ? config.learning.nudge !== false : true,
+              tools: Object.keys(learning.tools),
+            },
+          }
+        : {}),
       discovered: () => discovered,
       builtinTools,
       toolHint,
@@ -975,7 +1002,16 @@ export const createAgent = async (config: BrowserAgentConfig): Promise<Agent> =>
     listTools: () => catalog.map((e) => ({ ...e })),
     toolStrategy: strategy,
     contextWindowTokens: cfg.compaction.contextWindowTokens,
-    skills: skills.map((s) => ({ name: s.name, description: s.description })),
+    get skills() {
+      return skills.map((s) => ({
+        name: s.name,
+        description: s.description,
+        ...(s.origin?.kind === 'learned' ? { learned: true as const } : {}),
+      }))
+    },
+    listLearnedSkills: () => (learning ? learning.learned().map((s) => ({ ...s })) : []),
+    forgetSkill: async (name: string, onEvent?: (event: AgentEvent) => void) =>
+      learning ? learning.forget(name, onEvent) : false,
     capabilities: { images: accepts.image, pdf: accepts.pdf, files: accepts.file },
     models: { planner: plannerModel, executor: executorModel, synthesizer: synthesizerModel },
   }

@@ -50,6 +50,11 @@ behind every decision.
 - `src/tools/egress.ts` — `config.egress` / `web_fetch`: the browser sibling of the server's
   `createSafeFetch` (same policy shape; the pure address/pattern core is a COPY of the server's —
   change both, with tests). Security boundary: a change needs a test and a mutation check.
+- `src/learning.ts` — `config.learning`: `save_skill` / `forget_skill` write the agent's own lessons
+  as skills (`origin.kind: 'learned'`); `MemorySkillStore` / `VfsSkillStore`; secret scan, caps, host
+  skills never overwritten. Knowledge only, never policy: a lesson is loaded under `learnedPreamble`.
+  Browser sibling of the server's `learning.ts` (same names and guards). Every guard needs a test in
+  `tests/learning*.test.ts` and a mutation check.
 - `src/subagent/` — `tool` (createSubagentTool), `worker` (serveSubagentWorker),
   `protocol` (postMessage shapes).
 - `src/{thinking,limits,caching,skills,images}.ts` — see docs/capabilities.md.
