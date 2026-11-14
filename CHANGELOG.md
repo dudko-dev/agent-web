@@ -1,3 +1,8 @@
+# 0.0.34 / 2026-11-14
+
+### :tada: Enhancements
+- Updated dependencies: @ai-sdk/anthropic, @ai-sdk/deepseek, @ai-sdk/google, @ai-sdk/openai, @ai-sdk/openai-compatible, @ai-sdk/xai, @mlc-ai/web-llm, ai, prettier
+
 # 0.0.27 / 2026-11-07
 
 ### :tada: Enhancements
