@@ -1,7 +1,7 @@
 name: Autoupdate
 on:
-  schedule:
-    - cron: "0 23 * * 5"
+  # The weekly schedule is off: the package moved to github.com/dudko-dev/agents, where dependency
+  # updates are made now. Updating here would only create a release that diverges from it.
   workflow_dispatch:
   workflow_call:
 concurrency:

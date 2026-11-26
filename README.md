@@ -1,5 +1,12 @@
 # @dudko.dev/agent-web
 
+> [!IMPORTANT]
+> **This repository has moved.** `@dudko.dev/agent-web` is now developed in the
+> [`dudko-dev/agents`](https://github.com/dudko-dev/agents) monorepo, under
+> [`packages/agent-web`](https://github.com/dudko-dev/agents/tree/main/packages/agent-web). Issues, pull
+> requests and releases happen there; the npm package name is unchanged. Site and live demo:
+> [agent.dudko.dev](https://agent.dudko.dev). This repository is kept read-only for its history.
+
 Headless, **universal**, configurable **in-browser** LLM agent built on the
 [Vercel AI SDK](https://ai-sdk.dev). One package drives **any** model from the
 browser:

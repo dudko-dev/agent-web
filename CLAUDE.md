@@ -1,5 +1,8 @@
 # @dudko.dev/agent-web — instructions for Claude
 
+> **Moved.** This package now lives in the `dudko-dev/agents` monorepo (`packages/agent-web`). Do not make
+> changes here; this repository is read-only history.
+
 Headless, UI-agnostic, **universal in-browser** LLM agent built on the **Vercel
 AI SDK** (`ai` v7). One package drives cloud providers (bring-your-own-key),
 local WebGPU/WebLLM models, and any AI SDK `LanguageModel` (e.g. Chrome/Edge
